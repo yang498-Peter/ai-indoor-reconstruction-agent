@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/semantic-scene-v2.schema.json",
+  "title": "Semantic Scene V2 - node graph with separated evidence ledger",
+  "description": "Authority model for evidence-grounded indoor reconstruction. Three layers: nodes (what we believe the world is), evidence (why we are allowed to believe it), review (open issues and quality state). Geometry coordinates are SOURCE plan meters, Z-up. Display mapping is owned exclusively by scene-core.js: display = [x, elevation, -y].",
+  "type": "object",
+  "required": ["schemaVersion", "dataset", "coordinateFrame", "nodes", "rootNodeIds", "evidence"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "dataset": {"type": "string", "minLength": 1},
+    "coordinateFrame": {
+      "type": "object",
+      "required": ["authority", "display", "sourceToDisplay"],
+      "properties": {
+        "authority": {"const": "source-plan-meters-z-up"},
+        "display": {"const": "three-y-up"},
+        "sourceToDisplay": {"const": "display = [x, elevation, -y]"}
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/anyNode"}
+    },
+    "rootNodeIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "evidence": {
+      "type": "object",
+      "description": "Evidence ledger keyed by node id. A node absent from the ledger is an unresolved candidate.",
+      "additionalProperties": {"$ref": "#/$defs/evidenceEntry"}
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "issues": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
+        "qualityLoops": {"type": "array", "items": {"type": "object"}},
+        "topology": {
+          "type": "object",
+          "properties": {
+            "endpointToleranceM": {"type": "number", "exclusiveMinimum": 0},
+            "spaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "boundaryNodeIds"],
+                "properties": {
+                  "id": {"type": "string"},
+                  "boundaryNodeIds": {"type": "array", "minItems": 3, "items": {"type": "string"}}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Presentation and provenance pass-through consumed by the viewer compile layer: source, pipeline, photos, cameraPath, artifacts, focusEnvelope.",
+      "properties": {
+        "source": {"type": "object"},
+        "pipeline": {"type": "array", "items": {"type": "object"}},
+        "photos": {"type": "array"},
+        "cameraPath": {"type": "array"},
+        "artifacts": {"type": "object"},
+        "focusEnvelope": {"type": "object"}
+      }
+    },
+    "revision": {
+      "type": "object",
+      "properties": {
+        "counter": {"type": "integer", "minimum": 0},
+        "updatedAt": {"type": "string"},
+        "updatedBy": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "point2": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "polygon": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/point2"}},
+    "material": {
+      "type": "object",
+      "properties": {
+        "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"},
+        "description": {"type": "string"},
+        "roughness": {"type": "number"},
+        "opacity": {"type": "number"},
+        "bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["base", "height", "color"],
+            "properties": {
+              "base": {"type": "number"},
+              "height": {"type": "number", "exclusiveMinimum": 0},
+              "color": {"type": ["string", "integer"]}
+            }
+          }
+        }
+      }
+    },
+    "nodeMeta": {
+      "type": "object",
+      "properties": {
+        "createdBy": {"type": "string"},
+        "createdAt": {"type": "string"},
+        "note": {"type": "string"}
+      }
+    },
+    "baseNode": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z-]*_[a-z0-9]+$"},
+        "type": {"type": "string"},
+        "parentId": {"type": ["string", "null"]},
+        "children": {"type": "array", "items": {"type": "string"}},
+        "name": {"type": "string"},
+        "material": {"$ref": "#/$defs/material"},
+        "meta": {"$ref": "#/$defs/nodeMeta"}
+      }
+    },
+    "levelNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "level"},
+        "elevation": {"type": "number"},
+        "height": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "required": ["id", "type", "height"]
+    },
+    "wallNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "description": "Straight wall on the source plan. Doors/windows/openings are HOSTED children positioned by hostOffsetM along the centerline from start. Render joinery (miter, T-embed) is derived, never stored.",
+      "properties": {
+        "type": {"const": "wall"},
+        "wallKind": {"enum": ["solid", "glass"]},
+        "start": {"$ref": "#/$defs/point2"},
+        "end": {"$ref": "#/$defs/point2"},
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "thickness": {"type": "number", "exclusiveMinimum": 0},
+        "baseHeight": {"type": "number", "minimum": 0}
+      },
+      "required": ["id", "type", "start", "end", "height", "thickness"]
+    },
+    "openingNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "description": "Door, window, or plain opening hosted on a wall. hostOffsetM = distance from wall start to the opening CENTER along the centerline. An unhosted (legacy/migrated) opening carries freeSegment instead and parents to the level.",
+      "properties": {
+        "type": {"enum": ["door", "window", "opening"]},
+        "hostOffsetM": {"type": "number"},
+        "width": {"type": "number", "exclusiveMinimum": 0},
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "sillHeight": {"type": "number", "minimum": 0},
+        "freeSegment": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {
+            "start": {"$ref": "#/$defs/point2"},
+            "end": {"$ref": "#/$defs/point2"},
+            "thickness": {"type": "number"}
+          }
+        }
+      },
+      "required": ["id", "type", "width", "height"]
+    },
+    "columnNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "column"},
+        "center": {"$ref": "#/$defs/point2"},
+        "size": {"$ref": "#/$defs/point2"},
+        "yaw": {"type": "number"},
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "baseHeight": {"type": "number", "minimum": 0}
+      },
+      "required": ["id", "type", "center", "size", "height"]
+    },
+    "slabNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "slab"},
+        "polygon": {"$ref": "#/$defs/polygon"},
+        "thickness": {"type": "number", "exclusiveMinimum": 0},
+        "elevation": {"type": "number"}
+      },
+      "required": ["id", "type", "polygon"]
+    },
+    "ceilingNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "ceiling"},
+        "polygon": {"$ref": "#/$defs/polygon"},
+        "elevation": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "required": ["id", "type", "polygon", "elevation"]
+    },
+    "zoneNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "zone"},
+        "polygon": {"$ref": "#/$defs/polygon"}
+      },
+      "required": ["id", "type", "polygon"]
+    },
+    "itemNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "description": "Furniture / movable object. category selects the parametric builder in the viewer (table, workstation, meeting-table, round-table, oval-table, booth-desk, wall-workbench, chair, sofa, cabinet, generic).",
+      "properties": {
+        "type": {"const": "item"},
+        "category": {"type": "string"},
+        "center": {"$ref": "#/$defs/point2"},
+        "yaw": {"type": "number"},
+        "size": {
+          "type": "array",
+          "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "elevation": {"type": "number"},
+        "color": {"type": "string"},
+        "layout": {"type": "object"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["id", "type", "category", "center", "size"]
+    },
+    "scanNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "scan"},
+        "artifact": {"type": "string"},
+        "opacity": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["id", "type", "artifact"]
+    },
+    "guideNode": {
+      "allOf": [{"$ref": "#/$defs/baseNode"}],
+      "properties": {
+        "type": {"const": "guide"},
+        "artifact": {"type": "string"},
+        "scaleReference": {
+          "type": "object",
+          "required": ["start", "end", "realLengthMeters", "measuredLengthUnits"],
+          "properties": {
+            "start": {"$ref": "#/$defs/point2"},
+            "end": {"$ref": "#/$defs/point2"},
+            "realLengthMeters": {"type": "number", "exclusiveMinimum": 0},
+            "measuredLengthUnits": {"type": "number", "exclusiveMinimum": 0},
+            "label": {"type": "string"}
+          }
+        }
+      },
+      "required": ["id", "type", "artifact"]
+    },
+    "anyNode": {
+      "oneOf": [
+        {"$ref": "#/$defs/levelNode"},
+        {"$ref": "#/$defs/wallNode"},
+        {"$ref": "#/$defs/openingNode"},
+        {"$ref": "#/$defs/columnNode"},
+        {"$ref": "#/$defs/slabNode"},
+        {"$ref": "#/$defs/ceilingNode"},
+        {"$ref": "#/$defs/zoneNode"},
+        {"$ref": "#/$defs/itemNode"},
+        {"$ref": "#/$defs/scanNode"},
+        {"$ref": "#/$defs/guideNode"}
+      ]
+    },
+    "evidenceSource": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "overview", "high-structure-slice", "xray", "tabletop", "chairs",
+            "elevation", "photo", "point-measurement", "orthophoto",
+            "furniture-validation", "synthetic-sample", "inference-basis"
+          ]
+        },
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "note": {"type": "string"}
+      }
+    },
+    "evidenceEntry": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["candidate", "accepted-measured", "accepted-inferred", "rejected"]},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/evidenceSource"}},
+        "reviewer": {"type": "string"},
+        "reason": {"type": "string"},
+        "acceptedAt": {"type": "string"},
+        "gates": {"type": "object"}
+      }
+    },
+    "issue": {
+      "type": "object",
+      "required": ["id", "status", "summary"],
+      "properties": {
+        "id": {"type": "string"},
+        "status": {"enum": ["OPEN", "PATCHED", "RESOLVED", "FAIL"]},
+        "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+        "targetNodeIds": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+        "openedBy": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from '../../web-uploader/assets/vendor/three/addons/controls/OrbitControls.js';
+import { isSceneV2, compileSceneV2 } from '../../scene-core/scene-core.js';
 
 const canvas = document.querySelector('#viewport');
 const loading = document.querySelector('#loading');
@@ -537,6 +538,7 @@ function computeSolidWallJoinExtensions(structures) {
 
 function buildStructures(structures) {
   const solidWallJoints = computeSolidWallJoinExtensions(structures);
+  let prismPartCount = 0;
   const renderedVerticalFrames = new Set();
   const claimVerticalFrame = (point) => {
     const key = point.map((value) => Math.round(value * 1000)).join(':');
@@ -643,6 +645,28 @@ function buildStructures(structures) {
       }
       group.userData.structure = structure;
       wallGroup.add(group);
+    } else if (structure.geometryType === 'prism' && Array.isArray(structure.footprint) && structure.footprint.length >= 3) {
+      // Scene V2 wall solids: plan footprints already carry mitered corners
+      // and T-embed extensions from scene-core joinery; openings are real
+      // holes, so no render-only overlap is applied here.
+      const shape = new THREE.Shape();
+      structure.footprint.forEach((point, index) => index ? shape.lineTo(point[0], -point[1]) : shape.moveTo(point[0], -point[1]));
+      shape.closePath();
+      const description = structure.material?.description || '';
+      const explicitColor = structure.material?.color ? Number.parseInt(structure.material.color.replace('#', ''), 16) : null;
+      const color = Number.isFinite(explicitColor) ? explicitColor
+        : /oak|wood|木/i.test(description) ? 0xc2a179
+        : /dark gray|charcoal|深灰/i.test(description) ? 0x596066
+          : /warm-gray|暖灰/i.test(description) ? 0xc7c0b6 : 0xd8d6ce;
+      const geometry = new THREE.ExtrudeGeometry(shape, { depth: structure.height, bevelEnabled: false, curveSegments: 1 });
+      const mesh = new THREE.Mesh(geometry, standardMaterial(color, { roughness: 0.9 }));
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.y = structure.baseHeight || 0;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.structure = structure;
+      wallGroup.add(mesh);
+      prismPartCount += 1;
     } else if (structure.geometryType === 'rectangle') {
       const group = new THREE.Group();
       group.position.set(...structure.center);
@@ -684,7 +708,8 @@ function buildStructures(structures) {
   canvas.dataset.floorSurfaceCount = String(floorSurfaceMeshes.length);
   canvas.dataset.floorRenderContract = floorSurfaceMeshes.length ? 'solid-slab' : 'missing';
   canvas.dataset.solidWallJointCount = String(solidWallJoints.visualJoints.length);
-  canvas.dataset.solidWallJointContract = 'same-material-overlap-v1';
+  canvas.dataset.solidWallJointContract = prismPartCount ? 'derived-joinery-v2' : 'same-material-overlap-v1';
+  canvas.dataset.prismPartCount = String(prismPartCount);
 }
 
 function buildCandidateStructures(structures) {
@@ -1150,6 +1175,9 @@ async function init() {
     const response = await fetch('./generated/scene.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`${t('sceneLoadFailed')} (${response.status})`);
     sceneData = await response.json();
+    // Scene V2 authority graphs compile into the V1 view-model here; the
+    // compile layer owns joinery, hosted-opening splits and frame mapping.
+    if (isSceneV2(sceneData)) sceneData = compileSceneV2(sceneData);
     buildGround(sceneData.focusEnvelope);
     buildWalls(sceneData.walls);
     buildStructures(sceneData.structures || []);
