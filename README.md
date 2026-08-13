@@ -18,12 +18,17 @@ Set-Location ai-indoor-reconstruction-agent
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# 初始化工作目录，再接入自备数据
+# 零数据冒烟：生成合成 Scene V2 样例并启动 Viewer
+.\prototypes\litereality-three-redraw-20260812\run-demo.ps1 `
+  -PythonPath .\.venv\Scripts\python.exe -Sample
+```
+
+接入自备数据时：
+
+```powershell
 python .\.codex\skills\reconstruct-indoor-scene\scripts\discover_capture.py `
   --data 'X:\captures\capture-001' `
   --output '.\outputs\capture-001\capture-manifest.json'
-.\prototypes\litereality-three-redraw-20260812\run-demo.ps1 `
-  -PythonPath .\.venv\Scripts\python.exe
 ```
 
 浏览器打开：
@@ -40,9 +45,11 @@ python .\.codex\skills\reconstruct-indoor-scene\scripts\discover_capture.py `
 
 ## 仓库结构
 
+- `scene-core/`：Semantic Scene V2 内核——节点图 Schema、Agent 变更 API（`scene_api.py`）、
+  渲染编译层（miter/T 交接与门窗真开洞）、V1 迁移与合成样例。见 [docs/SCENE-V2.zh-CN.md](docs/SCENE-V2.zh-CN.md)。
 - `.codex/skills/reconstruct-indoor-scene/`：可复用 Agent 工作流、编排、证据审计和发布评分。
-- `prototypes/litereality-three-redraw-20260812/`：通用 Three.js 产品界面、语义场景 Schema 与验收入口。
-- `tests/codex-scan/`：编排器身份、能力、复核、回退和发布门禁测试。
+- `prototypes/litereality-three-redraw-20260812/`：通用 Three.js 产品界面与验收入口（自动识别 V1/V2 场景）。
+- `tests/codex-scan/`、`tests/scene-v2/`：编排器门禁测试与 Scene V2 API/几何数值测试。
 - `docs/`：跨电脑迁移、数据契约和协作说明。
 - `data/`：仅作本地挂载点；内容被 Git 忽略。
 
@@ -53,6 +60,9 @@ python .\.codex\skills\reconstruct-indoor-scene\scripts\discover_capture.py `
 ```powershell
 python scripts/validate_portable_repo.py
 python tests/codex-scan/bh-20260812-reconstruction-orchestrator.test.py
+python tests/scene-v2/test_scene_api.py
+node --test tests/scene-v2/scene-core.test.mjs
 ```
 
 本仓库默认作为私有协作项目。没有数据收集授权前，不要提交客户原图、原始点云、注册码、API Token 或包含个人目录的绝对路径。
+

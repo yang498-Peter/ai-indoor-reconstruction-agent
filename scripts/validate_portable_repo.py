@@ -44,11 +44,18 @@ def main() -> int:
         ):
             issues.append(f"POSSIBLE_SECRET:{relative}")
 
+    # Required files must all be COMMITTED artifacts: a fresh clone has no
+    # generated/ output, so listing generated files here breaks first-run
+    # validation on every new machine.
     required = [
         ROOT / ".codex/skills/reconstruct-indoor-scene/SKILL.md",
         ROOT / "prototypes/litereality-three-redraw-20260812/viewer.html",
-        ROOT / "prototypes/litereality-three-redraw-20260812/generated/scene.json",
-        ROOT / "tests/codex-scan/bh-20260813-litereality-wall-joint-render.test.mjs",
+        ROOT / "scene-core/semantic-scene-v2.schema.json",
+        ROOT / "scene-core/scene_api.py",
+        ROOT / "scene-core/scene-core.js",
+        ROOT / "scene-core/make_sample_scene.py",
+        ROOT / "tests/scene-v2/test_scene_api.py",
+        ROOT / "tests/scene-v2/scene-core.test.mjs",
     ]
     for path in required:
         if not path.is_file():

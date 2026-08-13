@@ -132,3 +132,4 @@ After `score_scene.py` passes, call `reconstruction_loop.py publish`. It refuses
 ## Deliver
 
 Provide the runnable viewer, semantic scene, resolution ledger, evidence images, score report, and concise remaining limitations. Separate geometry completion from whole-scene acceptance; do not claim perfection when any region or evidence gate remains open.
+
