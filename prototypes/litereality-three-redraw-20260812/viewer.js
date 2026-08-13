@@ -93,7 +93,7 @@ const translations = {
     inspector: '检查器', selectElement: '请选择一个元素', selectHint: '点击模型或左侧对象列表，查看点云测量值和本地识别依据。',
     qualityLoop: '复核质量循环', visualEvidence: '本地视觉证据', posedPhotos: '位姿照片', evidencePhotoAlt: '最近相机证据帧',
     evidenceCaptionDefault: '自动选择覆盖范围互补的本地帧，不上传。', previewPoints: '预览点', acceptedStructures: '已接受结构', localElements: '本地元素', estimatedHeight: '估计层高',
-    all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', generic: '待确认', 'booth-desk': '卡座工作台',
+    all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', generic: '待确认', 'booth-desk': '卡座工作台', tree: '树木', vehicle: '车辆', 'roof-panel': '雨棚屋面', step: '台阶',
     autoReviewed: '自动建议已完成人工取舍', geometryClosed: '几何闭合', publishedClosed: '正式闭合', shapeFailure: '形状失败', retained: '保留',
     evidenceFrame: '证据帧', originalFrame: '原始帧', localPreview: '本地预览', measuredSize: '测量尺寸', localConfidence: '本地置信度', supportPoints: '支持点数',
     heightEvidence: '桌面高度依据', ruleEvidence: '规则依据', occlusionCompletion: '遮挡补全', materialEvidence: '照片材质判断', status: '状态', noCompletion: '未使用推断补全', unconfirmed: '未确认',
@@ -112,7 +112,7 @@ const translations = {
     inspector: 'Object Inspector', selectElement: 'Select an object', selectHint: 'Select an object in the model or list to inspect measurements and supporting evidence.',
     qualityLoop: 'Quality Assurance', visualEvidence: 'Spatial Evidence', posedPhotos: 'Registered Photos', evidencePhotoAlt: 'Nearest registered evidence frame',
     evidenceCaptionDefault: 'Locally selected complementary evidence frames. Nothing is uploaded.', previewPoints: 'Preview Points', acceptedStructures: 'Approved Structures', localElements: 'Reconstructed Objects', estimatedHeight: 'Estimated Height',
-    all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk',
+    all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk', tree: 'Tree', vehicle: 'Vehicle', 'roof-panel': 'Roof Panel', step: 'Step',
     autoReviewed: 'AI proposals completed human review', geometryClosed: 'Geometry closure', publishedClosed: 'Approved closure', shapeFailure: 'Shape issue', retained: 'Retained',
     evidenceFrame: 'Evidence Frame', originalFrame: 'Source frame', localPreview: 'Local preview', measuredSize: 'Measured Size', localConfidence: 'Local Confidence', supportPoints: 'Supporting Points',
     heightEvidence: 'Height Evidence', ruleEvidence: 'Decision Evidence', occlusionCompletion: 'Occlusion Completion', materialEvidence: 'Photo Material', status: 'Status', noCompletion: 'No inferred completion', unconfirmed: 'Unconfirmed',
@@ -410,7 +410,7 @@ function buildTree(group, object) {
   const [width, height, depth] = object.size;
   const canopyColor = new THREE.Color(object.color || '#4c7a3d');
   const trunkHeight = Math.max(0.5, height * (object.layout?.trunkRatio ?? 0.32));
-  const trunkRadius = Math.max(0.05, Math.min(width, depth) * 0.055);
+  const trunkRadius = THREE.MathUtils.clamp(Math.min(width, depth) * 0.03, 0.08, 0.32);
   const trunk = standardMaterial(0x6d5236, { roughness: 0.92 });
   addCylinder(group, trunkRadius, trunkHeight, [0, trunkHeight / 2, 0], trunk);
   const foliage = standardMaterial(canopyColor, { roughness: 0.94 });
@@ -439,6 +439,50 @@ function buildTree(group, object) {
       group.add(blob);
     }
   }
+}
+
+function buildVehicle(group, object) {
+  // Simple site vehicle: body slab + cabin + wheels. size = [length, height, width].
+  const [length, height, width] = object.size;
+  const body = standardMaterial(object.color || '#d8d8d8', { roughness: 0.42, metalness: 0.35 });
+  const bodyHeight = height * 0.42;
+  const wheelRadius = Math.min(0.38, height * 0.24);
+  addBox(group, [length, bodyHeight, width], [0, wheelRadius + bodyHeight / 2, 0], body);
+  const cabinLength = length * (object.layout?.kind === 'pickup' ? 0.4 : 0.62);
+  const cabinOffset = object.layout?.kind === 'pickup' ? -length * 0.16 : 0;
+  const cabin = standardMaterial(object.color || '#d8d8d8', { roughness: 0.3, metalness: 0.25, transparent: true, opacity: 0.92 });
+  addBox(group, [cabinLength, height * 0.4, width * 0.9], [cabinOffset, wheelRadius + bodyHeight + height * 0.18, 0], cabin);
+  if (object.layout?.kind === 'pickup') {
+    // Open cargo bed walls behind the cabin.
+    const bed = standardMaterial(object.color || '#d8d8d8', { roughness: 0.5, metalness: 0.3 });
+    addBox(group, [length * 0.42, height * 0.16, 0.04], [length * 0.26, wheelRadius + bodyHeight + height * 0.07, width * 0.44], bed);
+    addBox(group, [length * 0.42, height * 0.16, 0.04], [length * 0.26, wheelRadius + bodyHeight + height * 0.07, -width * 0.44], bed);
+    addBox(group, [0.04, height * 0.16, width * 0.86], [length * 0.465, wheelRadius + bodyHeight + height * 0.07, 0], bed);
+  }
+  const tire = standardMaterial(0x24272a, { roughness: 0.9 });
+  for (const x of [-length * 0.32, length * 0.32]) {
+    for (const z of [-width / 2, width / 2]) {
+      addCylinder(group, wheelRadius, 0.24, [x, wheelRadius, z], tire, [Math.PI / 2, 0, 0]);
+    }
+  }
+}
+
+function buildRoofPanel(group, object) {
+  // Flat tilted roof sheet: size = [span, thickness, depth]; layout.pitchDeg
+  // tilts about the local x axis (positive lifts the -z edge).
+  const [span, thickness, depth] = object.size;
+  const material = standardMaterial(object.color || '#8a8f93', { roughness: 0.6, metalness: 0.25, side: THREE.DoubleSide });
+  const panel = addBox(group, [span, thickness, depth / Math.max(0.2, Math.cos(THREE.MathUtils.degToRad(object.layout?.pitchDeg || 0)))], [0, 0, 0], material);
+  panel.rotation.x = THREE.MathUtils.degToRad(object.layout?.pitchDeg || 0);
+  panel.position.y = 0;
+}
+
+function buildStep(group, object) {
+  // Two-tread masonry step block: size = [width, total height, depth].
+  const [width, height, depth] = object.size;
+  const concrete = standardMaterial(object.color || '#b9b2a6', { roughness: 0.9 });
+  addBox(group, [width, height / 2, depth], [0, height / 4, 0], concrete);
+  addBox(group, [width, height / 2, depth / 2], [0, height * 0.75, -depth / 4], concrete);
 }
 
 function buildGeneric(group, object) {
@@ -473,6 +517,9 @@ function buildObject(object) {
     case 'sofa': buildSofa(group, object); break;
     case 'cabinet': buildCabinet(group, object); break;
     case 'tree': buildTree(group, object); break;
+    case 'vehicle': buildVehicle(group, object); break;
+    case 'roof-panel': buildRoofPanel(group, object); break;
+    case 'step': buildStep(group, object); break;
     default: buildGeneric(group, object); break;
   }
   const reviewEdges = [];
@@ -958,14 +1005,14 @@ function selectObject(objectId, moveCamera = false) {
     <div>${t('measuredSize')}<b>${object.size.map((value) => `${value.toFixed(2)} m`).join(' × ')}</b></div>
     <div>${t('localConfidence')}<b>${Math.round(object.confidence * 100)}%</b></div>
     <div>${t('supportPoints')}<b>${(object.furnitureValidation?.pointCount ?? 0).toLocaleString(currentLanguage)}</b></div>
-    <div>${t('heightEvidence')}<b>${object.evidence.heightSource}</b></div>
-    <div>${t('evidenceFrame')}<b>${object.evidence.nearestCameraId}</b></div>
+    <div>${t('heightEvidence')}<b>${object.evidence?.heightSource ?? '—'}</b></div>
+    <div>${t('evidenceFrame')}<b>${object.evidence?.nearestCameraId ?? '—'}</b></div>
     <div class="wide">${currentLanguage === 'en' ? 'Delivery Status' : '交付状态'}<b>${object.deliveryValidation?.status ?? 'REVIEW'} · pose ${object.deliveryValidation?.poseStatus ?? 'MISSING'} · clearance ${object.deliveryValidation?.clearanceStatus ?? 'MISSING'}</b><small>${object.deliveryValidation?.clearanceIssues?.map((item) => `${item.componentId} × ${item.structureId}`).join(' · ') || object.furnitureValidation?.blockers?.join(' · ') || 'evidence gates passed'}</small></div>
     <div class="wide">${currentLanguage === 'en' ? 'Raw Pose Refit' : '原始点云姿态复算'}<b>${object.furnitureValidation?.status ?? 'REVIEW'} · raw Δ ${object.furnitureValidation?.yawResidualDeg?.toFixed(1) ?? '—'}° · leave-one-out family Δ ${object.furnitureValidation?.localFamilyYawResidualDeg?.toFixed(1) ?? '—'}°</b><small>${object.furnitureValidation?.blockers?.join(' · ') || object.furnitureValidation?.independentSource || 'missing receipt'}</small></div>
-    <div class="wide">${t('ruleEvidence')}<b>${object.evidence.reason}</b></div>
-    <div class="wide">${t('occlusionCompletion')}<b>${object.evidence.completion || t('noCompletion')}</b></div>
+    <div class="wide">${t('ruleEvidence')}<b>${object.evidence?.reason ?? object.furnitureValidation?.evidenceClass ?? '—'}</b></div>
+    <div class="wide">${t('occlusionCompletion')}<b>${object.evidence?.completion || t('noCompletion')}</b></div>
     <div class="wide">${t('materialEvidence')}<b>${Object.values(object.material || {}).join(' · ') || t('unconfirmed')}</b></div>
-    <div class="wide">${t('status')}<b>${localizedStatus(object.reviewState)}</b><small>${object.id}</small></div>
+    <div class="wide">${t('status')}<b>${localizedStatus(object.reviewState ?? object.deliveryValidation?.status ?? 'REVIEW')}</b><small>${object.id}</small></div>
   `;
   document.querySelectorAll('[data-object-id]').forEach((row) => row.classList.toggle('active', row.dataset.objectId === objectId));
   if (sceneData.photos.length) showPhoto(findClosestPreview(object));
@@ -1207,15 +1254,61 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
+function disposeGroupChildren(group) {
+  for (const child of [...group.children]) {
+    child.traverse?.((node) => {
+      node.geometry?.dispose?.();
+      const materials = Array.isArray(node.material) ? node.material : (node.material ? [node.material] : []);
+      materials.forEach((material) => material.dispose?.());
+    });
+    group.remove(child);
+  }
+}
+
+// The default fog density suits ~20 m interiors; large outdoor sites would
+// otherwise disappear at their own fit distance.
+function adaptFogToScene(data) {
+  const span = Math.max(data.focusEnvelope?.width || 20, data.focusEnvelope?.depth || 20, 20);
+  scene3d.fog.density = Math.min(0.017, 0.77 / span);
+}
+
+// Rebuilds the semantic model from a fresh view-model without touching the
+// camera - the live-watch mode uses this so an agent editing the scene file
+// gets an in-place updating view.
+function rebuildScene(data) {
+  clearSelectionHighlight();
+  selectedGroup = null;
+  for (const group of [wallGroup, candidateStructureGroup, objectGroup, reviewObjectGroup, cameraGroup]) {
+    disposeGroupChildren(group);
+  }
+  objectMeshes.clear();
+  floorSurfaceMeshes.length = 0;
+  adaptFogToScene(data);
+  buildGround(data.focusEnvelope);
+  buildWalls(data.walls || []);
+  buildStructures(data.structures || []);
+  buildDerivedGeometry(data.derivedGeometry || []);
+  buildCandidateStructures(data.structureCandidates || []);
+  (data.objects || []).forEach(buildObject);
+  buildCameraPath(data.cameraPath || []);
+  renderPanels(data);
+}
+
 async function init() {
   try {
     applyLanguage(currentLanguage, false);
-    const response = await fetch('./generated/scene.json', { cache: 'no-store' });
+    const startup = new URLSearchParams(window.location.search);
+    // ?scene=/outputs/foo/scene.json points the viewer at any scene file the
+    // local server exposes; ?watch=2 polls it and hot-rebuilds on change.
+    const scenePath = startup.get('scene') || './generated/scene.json';
+    const response = await fetch(scenePath, { cache: 'no-store' });
     if (!response.ok) throw new Error(`${t('sceneLoadFailed')} (${response.status})`);
-    sceneData = await response.json();
+    let sceneText = await response.text();
+    sceneData = JSON.parse(sceneText);
     // Scene V2 authority graphs compile into the V1 view-model here; the
     // compile layer owns joinery, hosted-opening splits and frame mapping.
     if (isSceneV2(sceneData)) sceneData = compileSceneV2(sceneData);
+    adaptFogToScene(sceneData);
     buildGround(sceneData.focusEnvelope);
     buildWalls(sceneData.walls);
     buildStructures(sceneData.structures || []);
@@ -1223,6 +1316,25 @@ async function init() {
     buildCandidateStructures(sceneData.structureCandidates || []);
     sceneData.objects.forEach(buildObject);
     buildCameraPath(sceneData.cameraPath);
+    const watchSeconds = Number(startup.get('watch') || 0);
+    if (watchSeconds > 0) {
+      setInterval(async () => {
+        try {
+          const poll = await fetch(scenePath, { cache: 'no-store' });
+          if (!poll.ok) return;
+          const text = await poll.text();
+          if (text === sceneText) return;
+          sceneText = text;
+          let next = JSON.parse(text);
+          if (isSceneV2(next)) next = compileSceneV2(next);
+          sceneData = next;
+          rebuildScene(sceneData);
+          canvas.dataset.sceneRebuildAt = String(Date.now());
+        } catch (error) {
+          console.warn('watch rebuild skipped:', error.message);
+        }
+      }, Math.max(1, watchSeconds) * 1000);
+    }
     const pointCloudArtifact = sceneData.artifacts?.pointCloud;
     if (pointCloudArtifact) {
       try {
@@ -1236,7 +1348,6 @@ async function init() {
     }
     renderPanels(sceneData);
     applyLanguage(currentLanguage, false);
-    const startup = new URLSearchParams(window.location.search);
     fitView(startup.get('view') === 'top');
     setMode(['raw', 'overlay', 'model'].includes(startup.get('mode')) ? startup.get('mode') : 'overlay');
     setProjection(startup.get('projection') === 'orthographic' ? 'orthographic' : 'perspective');

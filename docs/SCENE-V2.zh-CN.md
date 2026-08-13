@@ -22,10 +22,16 @@ Review State（还有什么没闭环）
 | --- | --- |
 | `scene-core/semantic-scene-v2.schema.json` | V2 契约（唯一权威 schema，消除 V1 的 schema drift） |
 | `scene-core/scene_api.py` | Agent 变更 API：所有编辑走命令，不再手改 JSON |
+| `scene-core/mcp_server.py` | MCP stdio server：scene_api 的 23 个工具面，纯 stdlib |
 | `scene-core/scene-core.js` | 编译层：joinery（miter/T 嵌入）、门窗真开洞、视图模型 |
+| `scene-core/pointcloud_evidence.py` | 点云证据生成：正射/高程带切片/任意断面，含像素↔米映射 |
+| `scene-core/detect_trees.py` | CHM 树候选检测 + 树干回波核验（只出候选） |
+| `scene-core/render_scene_overlay.py` | 场景叠加正射的 QA 对比图 |
 | `scene-core/make_sample_scene.py` | 合成样例（无需客户数据即可看 Viewer 全链路） |
 | `scene-core/migrate_scene_v1_to_v2.py` | V1 scene.json → V2，门窗自动挂靠最近平行墙 |
-| `tests/scene-v2/` | Python API 门禁测试 + Node joinery/编译数值测试 |
+| `tests/scene-v2/` | Python API/MCP 门禁测试 + Node joinery/编译数值测试 |
+
+Viewer 实时能力：`viewer.html?scene=<路径>&watch=2` 轮询场景文件并原地热重建（相机不动），Agent 边建边看。
 
 ## Agent 标准工作流
 
@@ -101,5 +107,6 @@ python scripts\validate_portable_repo.py
 
 - `verify_acceptance.py` 与 `score_scene.py` 仍消费 V1 视图模型；V2 场景先经编译层导出或待其移植；
 - Annotator 仍产出 V1 picks；下一步让它直接产出 `scene_api` 的 patch 文件（证据拾取 → 变更 API 的闭环）;
-- 曲面墙、斜墙顶、多层（multi-level）尚未进 schema；
-- MCP server 包装（把 `scene_api` 子命令暴露为 MCP tools）尚未做，CLI 已按每命令一操作设计，包装是薄层。
+- 曲面墙、斜墙顶、多层（multi-level）尚未进 schema；坡屋面暂以 `roof-panel` item 表达，未来应升级为 roof 节点；
+- 同一平面区间上下堆叠的洞口（窗下检修孔）在权威模型合法且校验通过，但 `splitWallParts` 按沿墙区间切分，渲染时下部孔洞会被上部洞口的窗下墙实体遮住——账本正确、渲染近似；
+- CLI 负数参数需用 `--flag=value` 形式（argparse 前导 `-` 限制）。
