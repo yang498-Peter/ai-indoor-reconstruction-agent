@@ -94,7 +94,7 @@ Pass `regional-review` only after every known regional issue resolves. Then run 
 
 ## Score and gate
 
-After visual review, create a scene-bound review receipt using the schema in [references/review-receipt-schema.md](references/review-receipt-schema.md), then run:
+After visual review, create a scene-bound review receipt in the capture work directory. The receipt must bind the scene hash, evidence hashes, reviewer identity and review time, then run:
 
 For a browser-free static review, do not hand-edit `PASS`. First render the final top and cutaway manifests, then run `scripts/accept_static_visual_review.py`. It verifies the current scene, renderer and output hashes, all blocking scene gates, and the checklist semantic hash before it writes the checklist and receipt. Any later scene or renderer change makes that acceptance stale.
 
@@ -132,3 +132,4 @@ After `score_scene.py` passes, call `reconstruction_loop.py publish`. It refuses
 ## Deliver
 
 Provide the runnable viewer, semantic scene, resolution ledger, evidence images, score report, and concise remaining limitations. Separate geometry completion from whole-scene acceptance; do not claim perfection when any region or evidence gate remains open.
+
