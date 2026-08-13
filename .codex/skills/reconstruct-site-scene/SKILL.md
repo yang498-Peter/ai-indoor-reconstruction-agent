@@ -50,14 +50,24 @@ any measurement you record.
 
 ```powershell
 python scene-core/detect_trees.py --las <cloud.las> `
-  --output outputs/<cap>/tree-candidates.json --min-height 4 `
-  --min-separation 3.5 --every 2 "--exclude=<building bbox>"
+  --output outputs/<cap>/trunk-candidates.json --min-height 3 `
+  --every 2 "--exclude=<building bbox>"
 ```
 
-Then: merge candidates closer than 2 m (keep the taller), drop
-`trunkVerified: false` unless the orthophoto clearly shows a crown, and draw
-the survivors on ortho-top.png to eyeball every circle against a real crown
-before creating any tree item. Conifer heuristic: canopyRadius/height < 0.12.
+The detector is TRUNK-FIRST: positions come from stem clusters (small plan
+footprint, near-full vertical occupancy of the 0.5-2.2 m band, and stem
+continuity above 2.2 m - the continuity gate is what rejects fence posts
+sitting under overhanging crowns). A CHM crown peak is only a fallback and
+comes back `trunkVerified: false`. Never place a tree at a CHM peak when a
+stem is available: winter deciduous crown maxima sit meters away from the
+trunk and the model visibly misses the raw cloud in overlay mode.
+
+Then: draw every candidate on the brightened walls-band raster (stems as
+crosses, crown-only as circles) and eyeball suspicious LINES of stems -
+regularly spaced collinear hits are a fence, not a grove. Load
+trunk-verified stems as accepted-measured; keep crown-only detections as
+scene CANDIDATES so the viewer shows them dashed-orange for review.
+Conifer heuristic: canopyRadius/height < 0.12.
 
 ## 3. Structure measurement (a dedicated measurement pass)
 
