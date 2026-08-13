@@ -139,6 +139,18 @@ candidate - re-accept with fresh evidence), regenerate overlays, and re-check
 the failed items. Two non-improving attempts on one issue = change evidence
 or decomposition before patching again.
 
+## 6b. Every new element gets a LOOKED-AT check
+
+Adding a node and seeing the summary count go up is not verification. For
+every newly authored element (especially new parametric builders): select it
+in the viewer, move the camera to actually see it, and confirm shape,
+orientation and attachment against the section evidence BEFORE moving on.
+Two real failures this rule would have caught immediately: tripod legs that
+never converged (compound Euler rotations instead of quaternion alignment)
+and a signboard embedded in the wall (placed against a pre-correction wall
+face). Wall-mounted items must reference the CURRENT wall centerline plus
+half thickness, not coordinates remembered from an earlier revision.
+
 ## 7. Deliver
 
 Deliverables: `scene.json` (with full evidence ledger), evidence + sections

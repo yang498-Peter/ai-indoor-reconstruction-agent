@@ -481,20 +481,25 @@ function buildRoofPanel(group, object) {
 }
 
 function buildTripod(group, object) {
-  // Surveying tripod: three splayed legs + head platform. size = [spread, height, spread].
+  // Surveying tripod: three legs meeting at the head. size = [spread, height, spread].
+  // Each leg is aligned apex->foot with a quaternion; compound Euler angles
+  // do NOT make the legs converge.
   const [spread, height] = object.size;
   const leg = standardMaterial(object.color || '#c8a23c', { roughness: 0.55, metalness: 0.3 });
   const legRadius = 0.022;
-  const legLength = Math.hypot(height, spread / 2);
+  const up = new THREE.Vector3(0, 1, 0);
   for (let index = 0; index < 3; index += 1) {
     const angle = (index / 3) * Math.PI * 2;
-    const footX = Math.sin(angle) * spread / 2;
-    const footZ = Math.cos(angle) * spread / 2;
-    const mesh = addCylinder(group, legRadius, legLength, [footX / 2, height / 2, footZ / 2], leg);
-    mesh.rotation.x = Math.atan2(footZ, height);
-    mesh.rotation.z = -Math.atan2(footX, height);
+    const foot = new THREE.Vector3(Math.sin(angle) * spread / 2, 0, Math.cos(angle) * spread / 2);
+    const apex = new THREE.Vector3(0, height * 0.96, 0);
+    const axis = apex.clone().sub(foot);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(legRadius, legRadius, axis.length(), 8), leg);
+    mesh.position.copy(foot.clone().add(apex).multiplyScalar(0.5));
+    mesh.quaternion.setFromUnitVectors(up, axis.normalize());
+    mesh.castShadow = true;
+    group.add(mesh);
   }
-  addCylinder(group, 0.09, 0.05, [0, height, 0], standardMaterial(0x3a4046, { metalness: 0.5, roughness: 0.4 }));
+  addCylinder(group, 0.09, 0.06, [0, height * 0.98, 0], standardMaterial(0x3a4046, { metalness: 0.5, roughness: 0.4 }));
 }
 
 function buildSignboard(group, object) {
