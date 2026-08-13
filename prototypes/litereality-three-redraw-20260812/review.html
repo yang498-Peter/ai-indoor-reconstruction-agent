@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent 几何落位对比</title>
+  <link rel="stylesheet" href="./review.css">
+</head>
+<body>
+  <header>
+    <div><p>VISUAL GROUNDING REVIEW</p><h1>Agent 几何落位对比</h1></div>
+    <div class="controls">
+      <label>证据层 <select id="layer"><option value="structure">结构高层 1.55–2.75 m</option><option value="xray">家具 X 光</option><option value="tabletop">桌面 0.66–0.90 m</option><option value="chairs">椅子 0.35–1.18 m</option><option value="overview">全景 ≤1.55 m</option></select></label>
+      <label>模型透明度 <input id="opacity" type="range" min="0" max="100" value="38"></label>
+      <span class="gate-legend">青实线＝家具姿态通过 · 橙虚线＝待复核 · 绿细线＝点云反证平面</span>
+      <button id="toggle-labels" type="button">显示标签</button>
+      <a href="./annotator.html">结构绘制</a>
+      <a href="./viewer.html">返回 3D</a>
+    </div>
+  </header>
+  <main>
+    <section class="comparison-card">
+      <div class="card-title"><span>01</span><div><b>原始彩色点云</b><small>默认高层结构切片 · 无人工标注污染</small></div></div>
+      <img id="raw-image" alt="原始彩色点云正射图">
+    </section>
+    <section class="comparison-card">
+      <div class="card-title"><span>02</span><div><b>模型轮廓叠加</b><small>家具轮廓与结构端点都必须贴住点云证据</small></div></div>
+      <canvas id="overlay" aria-label="模型轮廓叠加图"></canvas>
+    </section>
+    <aside class="inspection-card">
+      <div class="card-title"><span>03</span><div><b>逐元素放大</b><small>点击家具或结构检查中心、角度、端点和尺寸</small></div></div>
+      <canvas id="detail" width="640" height="440" aria-label="对象局部放大图"></canvas>
+      <img id="detail-elevation" alt="结构彩色点云立面剖面" hidden>
+      <div id="detail-meta" class="detail-meta">正在加载…</div>
+      <div id="object-list" class="object-list"></div>
+    </aside>
+  </main>
+  <footer><span id="status">加载场景证据…</span><b>判定规则：中心、方向、端点、高度和照片材质证据必须同时吻合。</b></footer>
+  <script type="module" src="./review.js"></script>
+</body>
+</html>

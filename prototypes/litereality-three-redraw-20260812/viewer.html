@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 室内模型重建</title>
+  <link rel="stylesheet" href="./viewer.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../web-uploader/assets/vendor/three/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">AI-POWERED SPATIAL INTELLIGENCE</p>
+        <h1 data-i18n="title">AI 室内模型重建</h1>
+      </div>
+      <div class="mode-switch" role="group" aria-label="显示模式" data-i18n-aria="displayMode">
+        <button type="button" data-mode="raw" data-i18n="modeRaw">原始点云</button>
+        <button type="button" data-mode="overlay" class="active" data-i18n="modeOverlay">叠加检查</button>
+        <button type="button" data-mode="model" data-i18n="modeModel">程序化模型</button>
+      </div>
+      <div class="view-actions">
+        <a href="./annotator.html" data-i18n="refineModel">结构绘制</a>
+        <a href="./review.html" data-i18n="evidenceReview">Agent 对比图</a>
+        <button type="button" id="fit-view" data-i18n="fitView">适配视图</button>
+        <button type="button" id="top-view" data-i18n="topView">俯视检查</button>
+        <div class="projection-switch" role="group" aria-label="投影方式" data-i18n-aria="projectionMode">
+          <button type="button" data-projection="perspective" class="active" data-i18n="perspectiveProjection">透视</button>
+          <button type="button" data-projection="orthographic" data-i18n="orthographicProjection">平行</button>
+        </div>
+        <div class="language-switch" role="group" aria-label="语言" data-i18n-aria="language">
+          <button type="button" data-language="zh-CN" class="active">中</button>
+          <button type="button" data-language="en">EN</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="left-panel">
+        <section class="panel-block">
+          <p class="section-kicker" data-i18n="processingStatus">处理状态</p>
+          <div id="pipeline" class="pipeline"></div>
+        </section>
+        <section class="panel-block stats-grid" id="scene-stats"></section>
+        <section class="panel-block">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker" data-i18n="measuredElements">已测量元素</p>
+              <h2 data-i18n="sceneObjects">场景对象</h2>
+            </div>
+            <span id="object-count" class="count-pill">0</span>
+          </div>
+          <div class="filter-row" id="category-filters"></div>
+          <div id="object-list" class="object-list"></div>
+        </section>
+      </aside>
+
+      <section class="viewport-wrap">
+        <canvas id="viewport" tabindex="0" aria-label="Three.js 室内重建视图" data-i18n-aria="viewportLabel"></canvas>
+        <div id="loading" class="loading-card" data-i18n="loadingScene">正在读取真实点云与 Semantic Scene…</div>
+        <div class="viewport-hud">
+          <span><i class="dot point"></i><b data-i18n="legendCloud">彩色点云</b></span>
+          <span><i class="dot wall"></i><b data-i18n="legendAccepted">已接受结构</b></span>
+          <span><i class="dot candidate"></i><b data-i18n="legendCandidate">候选/推断结构</b></span>
+          <span><i class="dot object"></i><b data-i18n="legendObject">程序化元素</b></span>
+          <span><i class="dot path"></i><b data-i18n="legendPath">相机轨迹</b></span>
+        </div>
+        <div class="navigation-help" aria-label="键盘视角操作" data-i18n-aria="navigationHelp">
+          <span><kbd>WASD</kbd><b data-i18n="navMove">平移</b></span>
+          <span><kbd>Q / E</kbd><b data-i18n="navElevate">升降</b></span>
+          <span><kbd>↑ ↓ ← →</kbd><b data-i18n="navLook">转向</b></span>
+          <span><kbd>Shift</kbd><b data-i18n="navFast">加速</b></span>
+          <span><kbd>P</kbd><b data-i18n="navProjection">切换投影</b></span>
+          <span><kbd>T / Home</kbd><b data-i18n="navViews">俯视 / 适配</b></span>
+        </div>
+        <div class="confidence-note" data-i18n="confidenceDefault">实体结构已通过四门；橙色半透明虚线是待复核推断，叠加检查可见、正式模型自动隐藏。自动墙线不会直接进入模型。</div>
+      </section>
+
+      <aside class="right-panel">
+        <section class="panel-block selection-card">
+          <p class="section-kicker" data-i18n="inspector">检查器</p>
+          <h2 id="selection-title" data-i18n="selectElement">请选择一个元素</h2>
+          <div id="selection-details" class="detail-grid" data-i18n="selectHint">
+            点击模型或左侧对象列表，查看点云测量值和本地识别依据。
+          </div>
+        </section>
+        <section class="panel-block">
+          <p class="section-kicker" data-i18n="qualityLoop">复核质量循环</p>
+          <div id="quality-loops" class="quality-list"></div>
+        </section>
+        <section class="panel-block photo-block">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker" data-i18n="visualEvidence">本地视觉证据</p>
+              <h2 data-i18n="posedPhotos">位姿照片</h2>
+            </div>
+          </div>
+          <img id="evidence-photo" alt="最近相机证据帧" data-i18n-alt="evidencePhotoAlt">
+          <p id="evidence-caption" data-i18n="evidenceCaptionDefault">自动选择覆盖范围互补的本地帧，不上传。</p>
+          <div id="photo-strip" class="photo-strip"></div>
+        </section>
+      </aside>
+    </section>
+  </main>
+  <script type="module" src="./viewer.js?fresh=20260812-r7"></script>
+</body>
+</html>

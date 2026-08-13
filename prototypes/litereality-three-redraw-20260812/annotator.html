@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI 人工判断与结构绘制</title><link rel="stylesheet" href="./annotator.css"></head>
+<body>
+  <header><div><p>HUMAN-IN-THE-LOOP SCENE AUTHORING</p><h1>AI 人工判断与结构绘制</h1></div><nav><a href="./review.html">截图对比</a><a href="./viewer.html">3D 查看</a></nav></header>
+  <main>
+    <aside class="tools">
+      <h2>证据与绘制</h2>
+      <label>点云层<select id="layer"><option value="xray">家具 X 光</option><option value="tabletop">桌面层</option><option value="chairs">椅背层</option><option value="overview">全景层</option></select></label>
+      <label>工具<select id="tool"><option value="segment">画线段</option><option value="rectangle">画矩形</option><option value="polygon">画多边形</option><option value="select">选择/检查</option></select></label>
+      <label>要素<select id="category"><option value="wall">实体墙</option><option value="glass">玻璃隔断</option><option value="door">门</option><option value="window">窗</option><option value="column">柱</option><option value="floor-zone">地面区域</option><option value="ceiling-zone">吊顶区域</option><option value="cabinet">固定柜体</option><option value="furniture">家具</option><option value="clutter">杂物</option></select></label>
+      <div class="numbers"><label>高度 m<input id="height" type="number" value="3.05" step="0.05"></label><label>离地 m<input id="base-height" type="number" value="0" step="0.05"></label><label>厚度 m<input id="thickness" type="number" value="0.12" step="0.01"></label><label>矩形角度°<input id="yaw" type="number" value="0" step="1"></label></div>
+      <label>颜色/材质<input id="material" value="warm white painted wall"></label>
+      <label>判断与补全依据<textarea id="note" rows="5" placeholder="写清点云层、照片、测量和推断链路"></textarea></label>
+      <p class="hint">线段/矩形：拖动绘制。多边形：逐点点击，双击闭合。Esc 取消。所有坐标自动保存为源点云米制 XY。</p>
+      <div class="actions"><button id="undo" type="button">撤销</button><button id="export" type="button">导出 JSON</button><label class="import">导入 JSON<input id="import" type="file" accept="application/json"></label></div>
+      <output id="measure">等待绘制…</output>
+    </aside>
+    <section class="canvas-wrap"><canvas id="canvas"></canvas><div class="legend"><span>实体墙</span><span>玻璃</span><span>门窗</span><span>区域</span></div></section>
+    <aside class="elements"><h2>人工判断链路</h2><div id="list"></div></aside>
+  </main>
+  <script type="module" src="./annotator.js"></script>
+</body></html>

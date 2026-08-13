@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/semantic-scene.schema.json",
+  "title": "Local evidence-grounded semantic scene",
+  "type": "object",
+  "required": ["schemaVersion", "dataset", "coordinateSystem", "elements"],
+  "properties": {
+    "schemaVersion": {"type": "string"},
+    "dataset": {"type": "string"},
+    "coordinateSystem": {"const": "source XY meters, Z-up"},
+    "topologyReview": {
+      "type": "object",
+      "required": ["endpointToleranceM", "spaces"],
+      "properties": {
+        "endpointToleranceM": {"type": "number", "exclusiveMinimum": 0},
+        "spaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "boundaryElementIds"],
+            "properties": {
+              "id": {"type": "string"},
+              "boundaryElementIds": {"type": "array", "minItems": 3, "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "elements": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/element"}
+    }
+  },
+  "$defs": {
+    "point2": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["sourceLayer", "reviewer", "state"],
+      "properties": {
+        "sourceLayer": {"enum": ["overview", "xray", "tabletop", "chairs", "photo", "point-measurement", "inference"]},
+        "reviewer": {"type": "string"},
+        "state": {"enum": ["candidate", "measured", "photo-confirmed", "inferred-completed", "rendered", "accepted", "rejected"]},
+        "note": {"type": "string"},
+        "photoIds": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["status", "reason", "gates"],
+      "properties": {
+        "status": {"enum": ["candidate", "accepted", "rejected"]},
+        "reason": {"type": "string", "minLength": 1},
+        "gates": {
+          "type": "object",
+          "required": ["planAlignment", "elevation", "photoMaterial", "openings"],
+          "properties": {
+            "planAlignment": {"enum": ["PASS", "REVIEW", "FAIL", "NA"]},
+            "elevation": {"enum": ["PASS", "REVIEW", "FAIL", "NA"]},
+            "photoMaterial": {"enum": ["PASS", "REVIEW", "FAIL", "NA"]},
+            "openings": {"enum": ["PASS", "REVIEW", "FAIL", "NA"]}
+          }
+        }
+      }
+    },
+    "element": {
+      "type": "object",
+      "required": ["id", "category", "geometry", "evidence"],
+      "properties": {
+        "id": {"type": "string"},
+        "category": {"enum": ["wall", "glass", "door", "window", "partition-unknown", "column", "floor-zone", "ceiling-zone", "cabinet", "furniture", "clutter"]},
+        "geometry": {
+          "oneOf": [
+            {"type": "object", "required": ["type", "start", "end"], "properties": {"type": {"const": "segment"}, "start": {"$ref": "#/$defs/point2"}, "end": {"$ref": "#/$defs/point2"}}},
+            {"type": "object", "required": ["type", "center", "size", "yaw"], "properties": {"type": {"const": "rectangle"}, "center": {"$ref": "#/$defs/point2"}, "size": {"$ref": "#/$defs/point2"}, "yaw": {"type": "number"}}},
+            {"type": "object", "required": ["type", "points"], "properties": {"type": {"const": "polygon"}, "points": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/point2"}}}}
+          ]
+        },
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "baseHeight": {"type": "number", "minimum": 0},
+        "thickness": {"type": "number", "exclusiveMinimum": 0},
+        "material": {"type": "object"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "decision": {"$ref": "#/$defs/decision"}
+      }
+    }
+  }
+}
