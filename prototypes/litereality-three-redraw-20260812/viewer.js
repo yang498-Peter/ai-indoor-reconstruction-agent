@@ -93,7 +93,7 @@ const translations = {
     inspector: '检查器', selectElement: '请选择一个元素', selectHint: '点击模型或左侧对象列表，查看点云测量值和本地识别依据。',
     qualityLoop: '复核质量循环', visualEvidence: '本地视觉证据', posedPhotos: '位姿照片', evidencePhotoAlt: '最近相机证据帧',
     evidenceCaptionDefault: '自动选择覆盖范围互补的本地帧，不上传。', previewPoints: '预览点', acceptedStructures: '已接受结构', localElements: '本地元素', estimatedHeight: '估计层高',
-    all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', generic: '待确认', 'booth-desk': '卡座工作台', tree: '树木', vehicle: '车辆', 'roof-panel': '雨棚屋面', step: '台阶',
+    all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', generic: '待确认', 'booth-desk': '卡座工作台', tree: '树木', vehicle: '车辆', 'roof-panel': '雨棚屋面', step: '台阶', tripod: '测量三脚架', signboard: '招牌',
     autoReviewed: '自动建议已完成人工取舍', geometryClosed: '几何闭合', publishedClosed: '正式闭合', shapeFailure: '形状失败', retained: '保留',
     evidenceFrame: '证据帧', originalFrame: '原始帧', localPreview: '本地预览', measuredSize: '测量尺寸', localConfidence: '本地置信度', supportPoints: '支持点数',
     heightEvidence: '桌面高度依据', ruleEvidence: '规则依据', occlusionCompletion: '遮挡补全', materialEvidence: '照片材质判断', status: '状态', noCompletion: '未使用推断补全', unconfirmed: '未确认',
@@ -112,7 +112,7 @@ const translations = {
     inspector: 'Object Inspector', selectElement: 'Select an object', selectHint: 'Select an object in the model or list to inspect measurements and supporting evidence.',
     qualityLoop: 'Quality Assurance', visualEvidence: 'Spatial Evidence', posedPhotos: 'Registered Photos', evidencePhotoAlt: 'Nearest registered evidence frame',
     evidenceCaptionDefault: 'Locally selected complementary evidence frames. Nothing is uploaded.', previewPoints: 'Preview Points', acceptedStructures: 'Approved Structures', localElements: 'Reconstructed Objects', estimatedHeight: 'Estimated Height',
-    all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk', tree: 'Tree', vehicle: 'Vehicle', 'roof-panel': 'Roof Panel', step: 'Step',
+    all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk', tree: 'Tree', vehicle: 'Vehicle', 'roof-panel': 'Roof Panel', step: 'Step', tripod: 'Survey Tripod', signboard: 'Signboard',
     autoReviewed: 'AI proposals completed human review', geometryClosed: 'Geometry closure', publishedClosed: 'Approved closure', shapeFailure: 'Shape issue', retained: 'Retained',
     evidenceFrame: 'Evidence Frame', originalFrame: 'Source frame', localPreview: 'Local preview', measuredSize: 'Measured Size', localConfidence: 'Local Confidence', supportPoints: 'Supporting Points',
     heightEvidence: 'Height Evidence', ruleEvidence: 'Decision Evidence', occlusionCompletion: 'Occlusion Completion', materialEvidence: 'Photo Material', status: 'Status', noCompletion: 'No inferred completion', unconfirmed: 'Unconfirmed',
@@ -480,6 +480,31 @@ function buildRoofPanel(group, object) {
   panel.position.y = 0;
 }
 
+function buildTripod(group, object) {
+  // Surveying tripod: three splayed legs + head platform. size = [spread, height, spread].
+  const [spread, height] = object.size;
+  const leg = standardMaterial(object.color || '#c8a23c', { roughness: 0.55, metalness: 0.3 });
+  const legRadius = 0.022;
+  const legLength = Math.hypot(height, spread / 2);
+  for (let index = 0; index < 3; index += 1) {
+    const angle = (index / 3) * Math.PI * 2;
+    const footX = Math.sin(angle) * spread / 2;
+    const footZ = Math.cos(angle) * spread / 2;
+    const mesh = addCylinder(group, legRadius, legLength, [footX / 2, height / 2, footZ / 2], leg);
+    mesh.rotation.x = Math.atan2(footZ, height);
+    mesh.rotation.z = -Math.atan2(footX, height);
+  }
+  addCylinder(group, 0.09, 0.05, [0, height, 0], standardMaterial(0x3a4046, { metalness: 0.5, roughness: 0.4 }));
+}
+
+function buildSignboard(group, object) {
+  // Wall-mounted sign: size = [width, height, thickness]; face slightly proud.
+  const [width, height, thickness] = object.size;
+  addBox(group, [width, height, thickness], [0, 0, 0], standardMaterial(0xf2efe8, { roughness: 0.5 }));
+  addBox(group, [width * 0.96, height * 0.85, 0.006], [0, 0, thickness / 2 + 0.004],
+    standardMaterial(object.color || '#c8442c', { roughness: 0.45 }));
+}
+
 function buildStep(group, object) {
   // Two-tread masonry step block: size = [width, total height, depth].
   const [width, height, depth] = object.size;
@@ -523,6 +548,8 @@ function buildObject(object) {
     case 'vehicle': buildVehicle(group, object); break;
     case 'roof-panel': buildRoofPanel(group, object); break;
     case 'step': buildStep(group, object); break;
+    case 'tripod': buildTripod(group, object); break;
+    case 'signboard': buildSignboard(group, object); break;
     default: buildGeneric(group, object); break;
   }
   const reviewEdges = [];
