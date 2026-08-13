@@ -75,6 +75,20 @@ class SceneApiTest(unittest.TestCase):
             api.validate_scene(self.scene)
         self.assertIn("OPENING_OVERLAP", str(ctx.exception))
 
+    def test_vertically_stacked_openings_are_legal(self):
+        # Transom over a door / hatch under a window: same plan interval,
+        # disjoint height bands - real construction, must validate.
+        self.make_wall()
+        api.op_add_opening(self.scene, "window", {
+            "id": "window_up", "wall": "wall_test01", "offset": 3.0, "width": 1.0,
+            "height": 0.9, "sill": 1.6,
+        }, "author-a")
+        api.op_add_opening(self.scene, "opening", {
+            "id": "hatch_low", "wall": "wall_test01", "offset": 3.1, "width": 1.1,
+            "height": 0.4, "sill": 0.1,
+        }, "author-a")
+        api.validate_scene(self.scene)
+
     def test_opening_taller_than_wall_fails(self):
         self.make_wall()
         api.op_add_opening(self.scene, "window", {

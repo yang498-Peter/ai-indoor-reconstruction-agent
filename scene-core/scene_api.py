@@ -174,7 +174,7 @@ def validate_scene(scene: dict) -> list[str]:
                 problems.append(f"WALL_TOO_SHORT:{node_id}")
             if float(node.get("thickness", 0)) <= 0 or float(node.get("height", 0)) <= 0:
                 problems.append(f"WALL_BAD_DIMENSIONS:{node_id}")
-            intervals: list[tuple[float, float, str]] = []
+            intervals: list[tuple[float, float, float, float, str]] = []
             for child_id in node.get("children", []):
                 child = nodes.get(child_id)
                 if not child or child.get("type") not in HOSTABLE_TYPES:
@@ -183,13 +183,18 @@ def validate_scene(scene: dict) -> list[str]:
                 length = wall_length(node)
                 if lo < -HOST_FIT_TOLERANCE_M or hi > length + HOST_FIT_TOLERANCE_M:
                     problems.append(f"OPENING_OUTSIDE_WALL:{child_id} [{lo:.3f},{hi:.3f}] on {length:.3f} m")
-                top = float(child.get("sillHeight", 0)) + float(child["height"])
+                sill = float(child.get("sillHeight", 0))
+                top = sill + float(child["height"])
                 if top > float(node["height"]) + 0.011:
                     problems.append(f"OPENING_TALLER_THAN_WALL:{child_id}")
-                for other_lo, other_hi, other_id in intervals:
-                    if lo < other_hi - 0.005 and hi > other_lo + 0.005:
+                # A clash needs BOTH plan and vertical overlap: a transom over
+                # a door or a hatch under a window is legitimate construction.
+                for other_lo, other_hi, other_sill, other_top, other_id in intervals:
+                    plan_overlap = lo < other_hi - 0.005 and hi > other_lo + 0.005
+                    vertical_overlap = sill < other_top - 0.005 and top > other_sill + 0.005
+                    if plan_overlap and vertical_overlap:
                         problems.append(f"OPENING_OVERLAP:{child_id}~{other_id}")
-                intervals.append((lo, hi, child_id))
+                intervals.append((lo, hi, sill, top, child_id))
         elif node_type in HOSTABLE_TYPES:
             hosted = parent_id is not None and nodes.get(parent_id, {}).get("type") == "wall"
             if not hosted and "freeSegment" not in node:
