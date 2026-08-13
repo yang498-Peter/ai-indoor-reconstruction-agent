@@ -404,6 +404,43 @@ function buildCabinet(group, object) {
   }
 }
 
+function buildTree(group, object) {
+  // Parametric site tree: size = [canopy width, total height, canopy depth].
+  // layout.form 'conifer' stacks cones; default is a broadleaf blob cluster.
+  const [width, height, depth] = object.size;
+  const canopyColor = new THREE.Color(object.color || '#4c7a3d');
+  const trunkHeight = Math.max(0.5, height * (object.layout?.trunkRatio ?? 0.32));
+  const trunkRadius = Math.max(0.05, Math.min(width, depth) * 0.055);
+  const trunk = standardMaterial(0x6d5236, { roughness: 0.92 });
+  addCylinder(group, trunkRadius, trunkHeight, [0, trunkHeight / 2, 0], trunk);
+  const foliage = standardMaterial(canopyColor, { roughness: 0.94 });
+  if (object.layout?.form === 'conifer') {
+    const layers = 3;
+    for (let index = 0; index < layers; index += 1) {
+      const t = index / layers;
+      const radius = (Math.max(width, depth) / 2) * (1 - t * 0.55);
+      const coneHeight = (height - trunkHeight) * 0.5;
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(radius, coneHeight, 10), foliage);
+      cone.position.y = trunkHeight + coneHeight * (0.35 + t * 0.85);
+      cone.castShadow = true;
+      group.add(cone);
+    }
+  } else {
+    const canopyHeight = height - trunkHeight;
+    const blobs = [
+      [0, 0.42, 0, 0.52], [width * 0.22, 0.62, depth * 0.12, 0.38],
+      [-width * 0.2, 0.58, -depth * 0.16, 0.4], [0, 0.82, 0, 0.34],
+    ];
+    for (const [bx, by, bz, scale] of blobs) {
+      const blob = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 9), foliage);
+      blob.scale.set(width * scale, canopyHeight * scale, depth * scale);
+      blob.position.set(bx, trunkHeight + canopyHeight * by, bz);
+      blob.castShadow = true;
+      group.add(blob);
+    }
+  }
+}
+
 function buildGeneric(group, object) {
   const [width, height, depth] = object.size;
   const material = standardMaterial(object.color, { roughness: 0.72, transparent: true, opacity: 0.72 });
@@ -435,6 +472,7 @@ function buildObject(object) {
     case 'chair': buildChair(group, object); break;
     case 'sofa': buildSofa(group, object); break;
     case 'cabinet': buildCabinet(group, object); break;
+    case 'tree': buildTree(group, object); break;
     default: buildGeneric(group, object); break;
   }
   const reviewEdges = [];
