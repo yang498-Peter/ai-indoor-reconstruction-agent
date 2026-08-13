@@ -412,7 +412,10 @@ function buildTree(group, object) {
   const trunkHeight = Math.max(0.5, height * (object.layout?.trunkRatio ?? 0.32));
   const trunkRadius = THREE.MathUtils.clamp(Math.min(width, depth) * 0.03, 0.08, 0.32);
   const trunk = standardMaterial(0x6d5236, { roughness: 0.92 });
-  addCylinder(group, trunkRadius, trunkHeight, [0, trunkHeight / 2, 0], trunk);
+  // The visible trunk continues INTO the canopy - stopping it at the canopy
+  // base leaves a floating-blob gap.
+  const trunkReach = trunkHeight + (height - trunkHeight) * 0.55;
+  addCylinder(group, trunkRadius, trunkReach, [0, trunkReach / 2, 0], trunk);
   const foliage = standardMaterial(canopyColor, { roughness: 0.94 });
   if (object.layout?.form === 'conifer') {
     const layers = 3;

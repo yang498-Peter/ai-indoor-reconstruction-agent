@@ -453,7 +453,9 @@ export function compileSceneV2(raw) {
   // The viewer frames and orbits around the display origin, so recenter the
   // compiled view model on the plan centroid. displayOffset records the shift:
   // source_x = display_x + offset[0], source_y = -(display_z + offset[1]).
-  const envelope = recenterViewModel(structures, structureCandidates, objects);
+  // meta.displayOffset pins the shift so external artifacts (point clouds)
+  // stay registered while the scene geometry evolves.
+  const envelope = recenterViewModel(structures, structureCandidates, objects, raw.meta?.displayOffset);
 
   const pipeline = raw.meta?.pipeline?.length ? raw.meta.pipeline : synthesizePipeline(raw);
   return {
@@ -475,7 +477,7 @@ export function compileSceneV2(raw) {
   };
 }
 
-function recenterViewModel(structures, structureCandidates, objects) {
+function recenterViewModel(structures, structureCandidates, objects, pinnedOffset) {
   const bounds = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
   const feed = (x, z) => {
     bounds.minX = Math.min(bounds.minX, x);
@@ -493,10 +495,10 @@ function recenterViewModel(structures, structureCandidates, objects) {
   }
   for (const object of objects) feed(object.center[0], object.center[2]);
   if (!Number.isFinite(bounds.minX)) {
-    return { width: 10, depth: 10, displayOffset: [0, 0] };
+    return { width: 10, depth: 10, displayOffset: pinnedOffset || [0, 0] };
   }
-  const offsetX = (bounds.minX + bounds.maxX) / 2;
-  const offsetZ = (bounds.minZ + bounds.maxZ) / 2;
+  const offsetX = pinnedOffset ? pinnedOffset[0] : (bounds.minX + bounds.maxX) / 2;
+  const offsetZ = pinnedOffset ? pinnedOffset[1] : (bounds.minZ + bounds.maxZ) / 2;
   const shift3 = (point) => { point[0] -= offsetX; point[2] -= offsetZ; };
   for (const structure of everyStructure) {
     if (structure.start) shift3(structure.start);
