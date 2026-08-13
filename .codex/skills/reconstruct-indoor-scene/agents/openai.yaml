@@ -1,0 +1,4 @@
+interface:
+  display_name: "室内点云智能重建"
+  short_description: "从点云与位姿照片完成证据化建模、循环复核和可靠发布流程"
+  default_prompt: "Use $reconstruct-indoor-scene to reconstruct this indoor scan through resumable evidence, authoring, render-review, adversarial-review, and immutable publish stages."

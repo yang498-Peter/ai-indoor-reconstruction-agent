@@ -1,0 +1,63 @@
+# Raw / customer capture data (never commit)
+data/*
+!data/README.md
+*.las
+*.laz
+*.e57
+*.ply
+*.pcd
+*.mcap
+*.bag
+*.bin
+*.mp4
+*.mov
+*.avi
+
+# Re-generated evidence and delivery output
+outputs/*
+!outputs/.gitkeep
+prototypes/*/generated/*
+prototypes/*/published/
+prototypes/*/work/checkpoints/
+
+# Capture-bound decisions and receipts stay local. The portable framework
+# regenerates blank ledgers per capture fingerprint.
+prototypes/*/area-review-plan.json
+prototypes/*/final-structure-resolution.json
+prototypes/*/manual-review.json
+prototypes/*/north-suite-picks.json
+prototypes/*/orthophoto-review.json
+prototypes/*/quality-review.json
+prototypes/*/real-data-config.json
+prototypes/*/region-candidates/
+prototypes/*/work/
+prototypes/*/*_2026-*.zh-CN.md
+prototypes/*/AGENT-*.zh-CN.md
+prototypes/*/FURNITURE-*.zh-CN.md
+prototypes/*/PRODUCT-*.zh-CN.md
+prototypes/*/README.zh-CN.md
+prototypes/*/build_*_resolution.py
+prototypes/*/generate_demo.py
+prototypes/*/audit_furniture_*.py
+prototypes/*/measure_structure_endpoints.py
+prototypes/*/render_furniture_static_review.py
+tests/codex-scan/bh-*-litereality-*.test.mjs
+
+# Python / Node / editor caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local secrets and machine configuration
+.env
+.env.*
+!.env.example
+real-data.local.json
+*.local.json
