@@ -8,11 +8,13 @@ The required public stages are:
 
 1. `intake`
 2. `evidence`
-3. `seed`
-4. `author`
-5. `regional-review`
-6. `global-review`
-7. `publish`
+3. `macro-hypothesis`
+4. `seed`
+5. `author`
+6. `presentation-review`
+7. `regional-review`
+8. `global-review`
+9. `publish`
 
 `intake` is initialized from the fingerprint-bound job. Later stages may pass only after their prerequisites and required capabilities pass. Reopening or failing an earlier stage invalidates every later stage.
 
@@ -43,7 +45,13 @@ Core capabilities:
 
 Photo association and material review are conditional. Geometry-only jobs may proceed, but whole-scene publication remains blocked until the job capabilities allow it.
 
-## Forced authoring rhythm
+## Macro pass before forced authoring
+
+The first scene pass is not issue-sized. In one bounded macro pass, create global axes, a coherent shell or scan boundary, major spaces, circulation, continuous visual floor, primary wall families and furniture zones in `scene-hypothesis.json`. Render a first global top and oblique view. Strict evidence controls confidence and claims, but does not force the hypothesis or presentation to contain black holes.
+
+Only after this pass does the issue-sized authority rhythm begin. `scene-authority.json` remains conservative; `scene-presentation.json` remains coherent and productized. Publication must identify which layer is being accepted.
+
+## Forced authority rhythm
 
 Work one issue at a time:
 

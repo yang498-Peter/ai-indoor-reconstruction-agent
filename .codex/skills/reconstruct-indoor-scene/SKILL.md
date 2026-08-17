@@ -9,6 +9,37 @@ Build the scene as an AI-supervised measurement and drawing workflow. Treat algo
 
 Read [references/orchestration-contract.md](references/orchestration-contract.md) before editing geometry. The pipeline owns completion; an author never self-certifies its own work.
 
+## Use three separate scene layers
+
+Read [references/hypothesis-presentation-contract.md](references/hypothesis-presentation-contract.md) before starting a new reconstruction or rescuing an unreadable evidence model.
+
+Never use the authority ledger itself as the customer-facing model. Maintain three distinct artifacts:
+
+1. `scene-authority.json` is the strict evidence database. It preserves measured, inferred, rejected, withheld, issue, receipt and provenance truth. It may remain open or incomplete.
+2. `scene-hypothesis.json` is a coherent reconstruction hypothesis. It starts from global axes, shell, spaces, circulation, continuous visual floor, wall families, furniture zones and scan continuations. It may contain reasonable inferred completion with confidence intervals and reasons.
+3. `scene-presentation.json` is the productized display model. It groups logical furniture, uses continuous visual surfaces, materials, lighting and procedural assets, and never exposes raw component IDs by default.
+
+Strict evidence controls what the product may claim, not whether a plausible inferred object may be shown. An inferred wall, floor continuation or furniture family may render normally in presentation mode. Evidence mode must distinguish it with transparency or dashed outlines, an `INFERRED` label, confidence and an uncertainty range. Do not create a black hole merely because a surface is not measured.
+
+## Start with a global reconstruction hypothesis
+
+Before opening endpoint-sized issues, complete a bounded 30–60 minute macro pass. The first pass does not pursue centimetre accuracy. It must establish:
+
+- one or more global axis families;
+- an exterior or scan-bounded shell hypothesis;
+- major spaces and their connectivity;
+- a continuous non-topological visual floor envelope;
+- primary wall bands and facade systems;
+- circulation and furniture zones;
+- repeated construction and furniture modules;
+- explicit inferred scan boundaries.
+
+This pass is room-first, not wall-segment-first. Solve spaces, wall families, passages and repeated modules before hanging measured wall segments on them. A hypothesis with confidence is preferable to 29 accurate isolated segments that form zero understandable spaces.
+
+Snap first-pass furniture and repeated fixtures to the nearest dominant building axis or its perpendicular. Do not let every object inherit a noisy local PCA yaw. Record both `rawYaw` and `presentationYaw`; allow an unsnapped exception only when independent raw or posed-photo evidence proves the real rotation. Fine-tune positions and angles after the coherent family layout is visible.
+
+After the macro pass, correct the hypothesis region by region: point clouds refine position, yaw, dimensions and height; posed photos refine type, material and missing parts. Sparse evidence lowers confidence but does not automatically delete a plausible hypothesis object. Deletion requires contradictory evidence or a better coherent explanation.
+
 ## Start safely
 
 1. Read the nearest repository instructions and inspect dirty files before editing.
@@ -39,6 +70,8 @@ Generate these views from the full source cloud:
 
 Inspect the unannotated image first. User arrows, boxes, and sketches may identify a symptom but never supply coordinates.
 
+Before drawing a photo-visible furniture item, write a short semantic observation that separates what the image proves (type, parts, materials, approximate seat count, repeated family and occlusion) from what it does not prove. Use the point cloud for centre, yaw, supported dimensions and height. A posed photo that merely contains the furniture family, or a nearest camera path, does not bind a proposed instance.
+
 Prefer browser-free static picking for repeated plan edits. Write an image-hash-bound picks JSON containing source-metre endpoints, then run `scripts/render_static_pick_overlay.py` to create a small overlay PNG and normalized structure JSON. Let algorithms suggest points or axes, but let the Agent select and edit those coordinates. Use a browser only for the final Three.js interaction check or when static evidence cannot expose the defect.
 
 After each semantic rebuild, run `scripts/render_scene_plan.py` to create a browser-free top model and hash manifest. Review this fresh image for skewed axis families, missing dividers, fake floor patterns, furniture collisions, and visual clutter before spending time on Three.js. The static renderer must reconstruct programmatic chairs from the same layout fields as the Viewer.
@@ -51,23 +84,29 @@ Before accepting visual finish quality, read [references/detail-joint-review.md]
 
 Before accepting any exterior wall or glazing face, run `scripts/audit_facade_face_selection.py` on every intersecting cross-wall. Treat the nearest visible return as only one face candidate. If at least half of the cross-walls continue 0.12 m or more beyond the picked face, stop and enumerate parallel inner, centre, and outer facade candidates. Prefer the outer common construction plane for the room envelope unless plan sections or photos prove a different semantic face. A user sketch can flag the wrong side but cannot provide the offset.
 
+Before publishing any floor or visual underlay, estimate the local floor peak independently and report floor-band point count, occupied grid cells, connected support and distance to existing slabs. Furniture existence never proves a floor boundary. An isolated patch with sparse support (default warning below 20% occupied cells unless the capture has a calibrated alternative) stays `WITHHOLD`; do not downgrade it to inferred merely to make the render look complete. A visual underlay is non-topological and earns no room-closure credit.
+
 When the outer face is beyond a transparent or unscanned gap, keep the measured opaque cross-wall endpoint and the inferred facade-junction endpoint as separate fields/elements. Do not stretch the entire opaque wall through the gap. The room footprint may use the inferred junction, while the solid renderer stops at measured evidence.
 
-## Resolve in construction order
+## Resolve the hypothesis in construction order
 
-1. Establish floor and ceiling elevations, but never render a camera-path envelope as a floor slab.
-2. Draw the exterior shell from continuous high returns and photo-visible facade construction.
-3. Close each room with shared endpoints. Fit repeated dividers to one family axis unless raw evidence proves a real deviation.
+1. Establish global axes, floor and ceiling elevations, but never render a camera-path envelope as an authority floor slab.
+2. Draw a coherent shell and scan-boundary hypothesis from continuous returns, repeated construction and photo-visible facade context.
+3. Declare major spaces, circulation and room envelopes before splitting the shell into measured segments. Fit repeated dividers to one family axis unless raw evidence proves a real deviation.
 4. Split walls into openings, doors, glazing, sills, heads, piers, and returns. Do not draw a solid wall across an opening.
 5. Draw interior finishes and fixed furniture zones.
 6. Add movable furniture from plan footprint, local height, photos, and repeated-layout constraints.
-7. Complete scan gaps using symmetry, standard construction, repeated modules, and collision-free topology; label each completion `inference` with a reason.
+7. Complete scan gaps in the hypothesis using symmetry, standard construction, repeated modules and collision-free topology; label each completion `inference` with confidence and a reason. Keep authority geometry conservative.
 
 For every elongated table or workbench, create a raw-data `furnitureValidation` receipt. The proposal may bound a deliberately enlarged search ROI, but the fit must re-estimate center, yaw and supported size from tabletop-height points; it must never copy the accepted yaw or size as the result. Record this as a conditional raw fit unless multi-seed and multi-ROI sensitivity checks converge. Compare it with a leave-one-out local wall/furniture axis family even when the author did not declare a family. A manual parameter compared with a suggestion derived from the same manual search box is one evidence source, never two. If raw coverage is sparse, keep a confidence interval and accept only as inferred with a second posed-photo or repeated-family source; a nearest camera position alone is not visual confirmation.
+
+Author productized furniture as one logical family transaction: tabletop, supports, screens, cabinets and chairs either validate and commit together or roll back together. Store a stable `logicalFurnitureId`; support parts with `supportsTopId` inherit the supported tabletop's logical family for counts and review. Component count is not furniture completeness.
 
 Every provisional element must end as either `accepted-measured`, `accepted-inferred`, or `rejected`. A finished scene has zero visible or hidden unresolved candidates.
 
 ## Run the visual correction loop
+
+The issue loop begins only after a coherent macro hypothesis and a first global top/oblique render exist. Do not use the issue loop as the primary scene-construction method.
 
 For every iteration, open one concrete issue in `pipeline-state.json` and work it to resolution:
 
@@ -79,6 +118,10 @@ For every iteration, open one concrete issue in `pipeline-state.json` and work i
 6. Run `reconstruction_loop.py review` with a new render plus independent raw/overlay/elevation/photo evidence. Every issue requires a reviewer other than the patch author; P0/P1 uses an independent regional or adversarial reviewer.
 7. Invalidate old screenshots and scores whenever scene geometry changes. Two non-improving attempts trigger a mandatory strategy change before another patch.
 8. Repeat failed regions before scoring the whole scene.
+
+Spend most of each cycle on model correction and one bounded visual comparison, not on producing receipts. Limit a region to three correction cycles before a mandatory macro strategy review. Two non-improving cycles require changing the shell, room decomposition, family axis, evidence slice or inference strategy instead of adding more local patches.
+
+When a broad historical issue becomes only partly resolved, atomically open explicit issues for every withheld remainder before resolving the old issue with an independent hash-bound receipt. Never erase an unproven remainder by changing status text alone.
 
 Batch one coherent regional correction before rebuilding. Do not reopen the browser for every endpoint adjustment. Use a fixed final runtime matrix after static review: global top, regional overlay, oblique construction close-up, eye-level object focus and near-floor interior. A top view cannot accept wall joints, floor thickness or camera occlusion.
 
@@ -125,11 +168,24 @@ Pass only when all are true:
 - runtime views include an eye-level focus and near-floor interior frame; the camera stays above the floor, floor surfaces are solid slabs rather than transparent sheets, and object focus is not hidden behind a wall;
 - final visual evidence binds the scene hash, renderer hashes, view mode and camera parameters, and is newer than all bound inputs.
 
+The customer-facing Presentation gate is separately fail-closed. Never label a view `Delivery Model` when any of these are true:
+
+- zero understandable spaces are represented;
+- the main visual floor is disconnected without an explicit threshold, bridge or scan-boundary explanation;
+- primary walls visibly float, terminate accidentally or form a high ratio of isolated fragments;
+- a large black void dominates a normally occupied region;
+- the model occupies less than 65 percent of the review frame;
+- internal component or `:partN` IDs are exposed in the default list;
+- logical furniture is not grouped and inspectable as one object;
+- the delivery page or manifest still says `EVIDENCE_ONLY`;
+- a first-time viewer cannot identify the main spaces, circulation and furniture zones without reading the evidence ledger.
+
+Presentation quality additionally requires logical-object counts, child collapse, rounded or bevelled furniture silhouettes where appropriate, believable supports, screens, cabinet faces, handles or kick plates, material separation, ambient fill, contact shadow and a useful camera composition. These display details do not upgrade measurement claims.
+
 Prefer one final syntax/JSON/UTF-8 check over repeatedly running broad regression suites. Visual reconstruction quality comes from evidence comparison and correction, not test volume.
 
 After `score_scene.py` passes, call `reconstruction_loop.py publish`. It refuses stale hashes, unresolved issues, incomplete stages, geometry-only limitations, or an existing publish directory, and writes a new immutable hash-addressed snapshot.
 
 ## Deliver
 
-Provide the runnable viewer, semantic scene, resolution ledger, evidence images, score report, and concise remaining limitations. Separate geometry completion from whole-scene acceptance; do not claim perfection when any region or evidence gate remains open.
-
+Provide the runnable viewer, all three scene layers, resolution ledger, evidence images, score report, presentation-gate report and concise remaining limitations. Separate authority truth, hypothesis confidence and presentation quality. Do not claim construction precision or whole-scene evidence acceptance merely because the presentation is coherent and attractive.

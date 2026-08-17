@@ -48,6 +48,71 @@ def material_color(item: dict, fallback: str) -> str:
     return color if isinstance(color, str) and color.startswith("#") else fallback
 
 
+def accepted_v2(scene: dict, node_id: str) -> bool:
+    return str(scene.get("evidence", {}).get(node_id, {}).get("status", "")).startswith("accepted-")
+
+
+def compile_scene_v2_for_review(scene: dict) -> dict:
+    """Compile the small browser-free review surface without importing JS."""
+    structures: list[dict] = []
+    objects: list[dict] = []
+    nodes = scene.get("nodes", {})
+    levels = [node for node in nodes.values() if node.get("type") == "level"]
+    for node in nodes.values():
+        node_type = node.get("type")
+        if node_type == "wall" and accepted_v2(scene, node["id"]):
+            start, end = node["start"], node["end"]
+            length = math.hypot(end[0] - start[0], end[1] - start[1])
+            openings = [nodes[child] for child in node.get("children", [])
+                        if child in nodes and nodes[child].get("type") in {"opening", "door", "window"}
+                        and accepted_v2(scene, child)]
+            intervals = sorted([(max(0.0, float(row.get("hostOffsetM", 0)) - float(row.get("width", 0)) / 2),
+                                 min(length, float(row.get("hostOffsetM", 0)) + float(row.get("width", 0)) / 2), row)
+                                for row in openings], key=lambda row: row[0])
+            category = "glass" if node.get("wallKind") == "glass" else "wall"
+            def emit(part_id, a, b, base, height):
+                if b - a <= 1e-6 or height <= 1e-6:
+                    return
+                p0 = [start[0] + (end[0] - start[0]) * a / length, 0, -(start[1] + (end[1] - start[1]) * a / length)]
+                p1 = [start[0] + (end[0] - start[0]) * b / length, 0, -(start[1] + (end[1] - start[1]) * b / length)]
+                structures.append({"id": part_id, "category": category, "geometryType": "segment",
+                                   "start": p0, "end": p1, "baseHeight": base, "height": height,
+                                   "thickness": node.get("thickness", .08), "material": node.get("material", {}),
+                                   "wallKind": node.get("wallKind", "solid")})
+            cursor = 0.0
+            for index, (a, b, opening) in enumerate(intervals):
+                emit(f"{node['id']}-solid-{index}", cursor, a, node.get("baseHeight", 0), node.get("height", 3.0))
+                sill = float(opening.get("sillHeight", 0))
+                emit(f"{opening['id']}-sill", a, b, node.get("baseHeight", 0), sill)
+                head_base = float(node.get("baseHeight", 0)) + sill + float(opening.get("height", 0))
+                emit(f"{opening['id']}-head", a, b, head_base,
+                     float(node.get("baseHeight", 0)) + float(node.get("height", 3.0)) - head_base)
+                cursor = max(cursor, b)
+            emit(f"{node['id']}-solid-tail", cursor, length, node.get("baseHeight", 0), node.get("height", 3.0))
+        elif node_type == "slab" and accepted_v2(scene, node["id"]):
+            structures.append({
+                "id": node["id"], "category": "floor-zone", "geometryType": "polygon",
+                "points": [[point[0], node.get("elevation", 0), -point[1]] for point in node.get("polygon", [])],
+                "material": node.get("material", {}), "baseHeight": node.get("elevation", 0),
+                "height": node.get("thickness", .05),
+            })
+        elif node_type == "item" and accepted_v2(scene, node["id"]):
+            objects.append({
+                "id": node["id"], "category": node.get("category", "item"),
+                "center": [node["center"][0], node.get("elevation", 0), -node["center"][1]],
+                "yaw": -float(node.get("yaw", 0)), "size": list(node.get("size", [0, 0, 0])),
+                "color": node.get("color", "#e3dfd2"), "layout": node.get("layout", {}),
+                "deliveryValidation": {"status": "PASS"}, "_atomicV2": True,
+            })
+    review = scene.get("review", {})
+    return {
+        "schemaVersion": scene.get("schemaVersion"), "structures": structures, "objects": objects,
+        "levels": [{"id": row["id"], "name": row.get("name", "Level"), "height": row.get("height", 3.05)} for row in levels],
+        "pipeline": [{"id": "objects", "status": "REVIEW"}, {"id": "structures", "status": "REVIEW"}, {"id": "author", "status": "REVIEW"}],
+        "continuations": review.get("continuations", []), "openings": [],
+    }
+
+
 def object_chairs(item: dict) -> list[np.ndarray]:
     category = item.get("category")
     layout = item.get("layout", {})
@@ -56,10 +121,11 @@ def object_chairs(item: dict) -> list[np.ndarray]:
     center = np.asarray([float(item["center"][0]), float(item["center"][2])])
     positions: list[tuple[float, float]] = []
     if category == "workstation":
-        count = max(1, int(layout.get("seatsPerSide", round(width / 1.4))))
+        total = max(0, int(layout.get("seatCount", 4)))
+        slots = math.ceil(total / 2) if total else 1
         clearance = min(0.58, max(0.42, float(layout.get("chairClearanceM", 0.56))))
-        positions = [(-width / 2 + (index + 0.5) * width / count, side * (depth / 2 + clearance))
-                     for index in range(count) for side in (-1, 1)]
+        positions = [(-width / 2 + (index // 2 + 0.5) * width / slots,
+                      (-1 if index % 2 == 0 else 1) * (depth / 2 + clearance)) for index in range(total)]
     elif category == "wall-workbench":
         count = max(1, int(layout.get("seatCount", round(width / 1.4))))
         side = int(layout.get("seatSide", 1)) or 1
@@ -90,9 +156,11 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     args = parser.parse_args()
     scene = json.loads(args.scene.read_text(encoding="utf-8"))
+    if scene.get("schemaVersion") == "2.0" and isinstance(scene.get("nodes"), dict):
+        scene = compile_scene_v2_for_review(scene)
     pipeline_by_id = {item.get("id"): item.get("status") for item in scene.get("pipeline", [])}
     delivery_ready = all(pipeline_by_id.get(stage) == "PASS" for stage in ("objects", "structures", "author"))
-    figure, axis = plt.subplots(figsize=(16, 10), dpi=180)
+    figure, axis = plt.subplots(figsize=(12, 12), dpi=180)
     figure.patch.set_facecolor("#0b1013")
     axis.set_facecolor("#0b1013")
 
@@ -103,6 +171,15 @@ def main() -> int:
     floor_parts = [floor_union] if floor_union.geom_type == "Polygon" else list(floor_union.geoms)
     for polygon in floor_parts:
         add_polygon(axis, np.asarray(polygon.exterior.coords[:-1]), "#656a68", "none", 0.94, 0, 1)
+    zone_colors = ["#526e70", "#6b655b", "#555f72", "#706255"]
+    for index, room in enumerate(scene.get("spaces", [])):
+        points = np.asarray([[point[0], point[2]] for point in room.get("points", [])], dtype=float)
+        if len(points) < 3:
+            continue
+        add_polygon(axis, points, zone_colors[index % len(zone_colors)], "none", 0.22, 0, 2)
+        center = points.mean(axis=0)
+        axis.text(center[0], center[1], room.get("name", room.get("id", "SPACE")), color="#d9e8e3",
+                  fontsize=7, ha="center", va="center", alpha=.82, zorder=3)
 
     category_colors = {
         "wall": "#d7d2c7", "solid-wall": "#d7d2c7", "partition": "#c3beb2",
@@ -134,7 +211,8 @@ def main() -> int:
             if center and size:
                 footprint = box([center[0], center[2]], size[0], size[1], float(item.get("yaw", 0)))
         if footprint is not None:
-            add_polygon(axis, footprint, color, color, 0.86 if category in {"glass", "window"} else 1.0, 0.45, 5)
+            alpha = 0.22 if item.get("scanContinuation") else (0.86 if category in {"glass", "window"} else (.72 if "inferred" in str(item.get("status", "")) else 1.0))
+            add_polygon(axis, footprint, color, color, alpha, 0.45, 5)
             structure_count += 1
 
     object_count = 0
@@ -150,7 +228,19 @@ def main() -> int:
             "oval-table": "#d6d2c9", "meeting-table": "#d1a96f",
         }.get(category, "#e3dfd2")
         object_edge = "#f4f1e8" if accepted else "#ff9a55"
-        if category in {"round-table", "oval-table"}:
+        if category == "u-counter":
+            width, _, depth = map(float, item["size"])
+            yaw = float(item.get("yaw", 0))
+            bar_depth = min(.62, max(.42, float(item.get("layout", {}).get("barDepthM", .52))))
+            rotation = np.asarray([[math.cos(yaw), math.sin(yaw)], [-math.sin(yaw), math.cos(yaw)]])
+            local_runs = [(0, -depth / 2 + bar_depth / 2, width, bar_depth),
+                          (-width / 2 + bar_depth / 2, 0, bar_depth, depth),
+                          (width / 2 - bar_depth / 2, 0, bar_depth, depth)]
+            for local_x, local_z, run_width, run_depth in local_runs:
+                run_center = np.asarray([local_x, local_z]) @ rotation.T + np.asarray(center)
+                add_polygon(axis, box(run_center.tolist(), run_width, run_depth, yaw), object_face,
+                            object_edge, 1.0, 0.7, 8)
+        elif category in {"round-table", "oval-table"}:
             axis.add_patch(Ellipse(center, float(item["size"][0]), float(item["size"][2]),
                                    angle=-math.degrees(float(item.get("yaw", 0))),
                                    facecolor=object_face if accepted else "none", edgecolor=object_edge,

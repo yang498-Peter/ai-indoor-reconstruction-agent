@@ -111,6 +111,10 @@ test('compileSceneV2 separates accepted, candidate and rejected', () => {
         id: 'glass_a', type: 'wall', wallKind: 'glass', parentId: 'level_1', children: ['door_g'],
         start: [0, 6], end: [6, 6], height: 3, thickness: 0.045,
       },
+      elevated_head: {
+        id: 'elevated_head', type: 'wall', wallKind: 'elevated-band', parentId: 'level_1', children: [],
+        start: [1, 8], end: [5, 8], baseHeight: 2.4, height: 0.6, thickness: 0.1,
+      },
       door_g: {
         id: 'door_g', type: 'door', parentId: 'glass_a', children: [],
         hostOffsetM: 3, width: 1, height: 2.05, sillHeight: 0,
@@ -129,6 +133,7 @@ test('compileSceneV2 separates accepted, candidate and rejected', () => {
       wall_a: { status: 'accepted-measured', sources: [{ type: 'overview' }] },
       door_a: { status: 'accepted-measured', sources: [{ type: 'photo' }] },
       glass_a: { status: 'accepted-measured', sources: [{ type: 'overview' }] },
+      elevated_head: { status: 'accepted-measured', sources: [{ type: 'elevation' }] },
       door_g: { status: 'accepted-measured', sources: [{ type: 'photo' }] },
       wall_rejected: { status: 'rejected', reason: 'shadow artifact' },
       item_ok: { status: 'accepted-inferred', sources: [{ type: 'tabletop' }, { type: 'photo' }], reason: 'x' },
@@ -146,6 +151,13 @@ test('compileSceneV2 separates accepted, candidate and rejected', () => {
   const panes = compiled.structures.filter((s) => s.category === 'glass');
   assert.equal(panes.length, 2);
   assert.equal(compiled.structures.filter((s) => s.category === 'door').length, 2);
+
+  // A measured high facade band renders once, but never enters solid-wall
+  // joinery or opening compilation.
+  const elevated = compiled.structures.filter((s) => s.category === 'elevated-band');
+  assert.equal(elevated.length, 1);
+  assert.equal(elevated[0].geometryType, 'segment');
+  assert.equal(elevated[0].baseHeight, 2.4);
 
   // Candidate wall goes to candidates; rejected wall disappears entirely.
   assert.deepEqual(compiled.structureCandidates.map((s) => s.id), ['wall_candidate']);
@@ -167,4 +179,19 @@ test('compileSceneV2 separates accepted, candidate and rejected', () => {
   // Panels contract: pipeline synthesized, levels present.
   assert.equal(compiled.pipeline.length, 6);
   assert.equal(compiled.levels[0].height, 3);
+});
+
+test('compileSceneV2 keeps an all-rejected scene under review', () => {
+  const raw = {
+    schemaVersion: '2.0', dataset: 'rejected-only', coordinateFrame: {},
+    nodes: {
+      level_1: { id: 'level_1', type: 'level', parentId: null, children: ['wall_rejected'], height: 3 },
+      wall_rejected: { id: 'wall_rejected', type: 'wall', parentId: 'level_1', children: [], start: [0, 0], end: [2, 0], height: 3, thickness: 0.12 },
+    },
+    rootNodeIds: ['level_1'],
+    evidence: { wall_rejected: { status: 'rejected', reason: 'not structure' } },
+  };
+  const compiled = compileSceneV2(raw);
+  assert.equal(compiled.structures.length, 0);
+  assert.ok(compiled.pipeline.some((stage) => stage.status === 'REVIEW'));
 });

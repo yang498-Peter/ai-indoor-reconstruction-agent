@@ -25,7 +25,7 @@ RESPONSE_TIMEOUT_S = 20.0
 EXPECTED_TOOLS = {
     "init_scene", "create_wall", "add_door", "add_window", "add_opening", "add_item",
     "add_slab", "add_ceiling", "add_zone", "add_column", "update_node", "delete_node",
-    "attach_evidence", "accept_node", "reject_node", "apply_patch", "find_nodes",
+    "attach_evidence", "accept_node", "reject_node", "open_issue", "transition_issue", "apply_patch", "find_nodes",
     "measure", "get_scene_summary", "get_node", "validate_scene", "undo", "get_agent_guide",
 }
 
@@ -221,7 +221,7 @@ class AuthoringWorkflowTest(McpServerTestCase):
 
         summary = self.call_ok("get_scene_summary")
         self.assertEqual(summary["nodeCounts"], {"level": 1, "wall": 1, "door": 1})
-        self.assertEqual(summary["evidenceStatuses"], {"candidate": 3})
+        self.assertEqual(summary["evidenceStatuses"], {"candidate": 2})
         self.assertEqual(summary["dataset"], "mcp-capture-001")
 
         node = self.call_ok("get_node", {"id": "door_main"})

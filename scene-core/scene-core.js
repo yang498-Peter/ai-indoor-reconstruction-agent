@@ -330,7 +330,22 @@ export function compileSceneV2(raw) {
       levels.push({ id: node.id, name: node.name || node.id, height: node.height, elevation: node.elevation || 0 });
     } else if (node.type === 'wall') {
       const openings = hostedOpenings(raw, node);
-      if ((node.wallKind || 'solid') === 'glass') {
+      if ((node.wallKind || 'solid') === 'elevated-band') {
+        const target = isAccepted(status) ? structures : structureCandidates;
+        target.push({
+          id: node.id,
+          sourceId: node.id,
+          category: 'elevated-band',
+          geometryType: 'segment',
+          start: planToDisplay(node.start, node.baseHeight || 0),
+          end: planToDisplay(node.end, node.baseHeight || 0),
+          height: node.height,
+          baseHeight: node.baseHeight || 0,
+          thickness: node.thickness || 0.10,
+          material: node.material || {},
+          decision: { status },
+        });
+      } else if ((node.wallKind || 'solid') === 'glass') {
         // Glass panes render as V1 glass segments split around openings.
         const direction = wallDirection(node);
         const length = wallLength(node);
@@ -520,7 +535,8 @@ function synthesizePipeline(raw) {
     .filter((nodeId) => raw.nodes[nodeId].type !== 'level')
     .map((nodeId) => statusOf(raw, nodeId));
   const unresolved = statuses.filter((status) => status === 'candidate').length;
-  const stageStatus = unresolved ? 'REVIEW' : 'PASS';
+  const accepted = statuses.filter((status) => isAccepted(status)).length;
+  const stageStatus = unresolved || accepted === 0 ? 'REVIEW' : 'PASS';
   return [
     { id: 'ingest', label: '点云与相机注册', status: 'PASS' },
     { id: 'seed', label: 'AI 候选复核', status: stageStatus },

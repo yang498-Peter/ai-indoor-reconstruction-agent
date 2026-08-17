@@ -305,7 +305,28 @@
         "severity": {"enum": ["P0", "P1", "P2", "P3"]},
         "targetNodeIds": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
-        "openedBy": {"type": "string"}
+        "openedBy": {"type": "string"},
+        "openedAt": {"type": "string"},
+        "kind": {"type": "string"},
+        "area": {"type": "string"},
+        "resolution": {
+          "type": "object",
+          "required": ["previousStatus", "reviewer", "reason", "resolvedAt", "receipt"],
+          "properties": {
+            "previousStatus": {"enum": ["OPEN", "PATCHED", "FAIL"]},
+            "reviewer": {"type": "string", "pattern": "^[a-z0-9._-]{3,64}$"},
+            "reason": {"type": "string", "minLength": 1},
+            "resolvedAt": {"type": "string"},
+            "receipt": {
+              "type": "object",
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        }
       }
     }
   }

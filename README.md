@@ -6,6 +6,7 @@
 
 - 算法只负责候选、切片、测量和反证；Agent/人工负责最终语义判断与绘制。
 - `accepted`、`accepted-inferred`、`REVIEW` 明确分层，推断不能冒充实测。
+- 楼层等容器不计入候选几何；issue 必须通过原子 `open_issue` 明确保留风险，并只能依靠独立 reviewer 和哈希绑定回执迁移状态，禁止手改状态冒充闭环。
 - 原始数据只读，所有工作目录绑定 capture fingerprint。
 - 发布前独立检查拓扑、遗漏、墙体交接、家具姿态、碰撞、地面和静态/三维视觉证据。
 - 不依赖 GroundingDINO、TRELLIS、Blender 或模型 API。
@@ -65,4 +66,3 @@ node --test tests/scene-v2/scene-core.test.mjs
 ```
 
 本仓库默认作为私有协作项目。没有数据收集授权前，不要提交客户原图、原始点云、注册码、API Token 或包含个人目录的绝对路径。
-

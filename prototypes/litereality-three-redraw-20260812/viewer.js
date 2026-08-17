@@ -85,14 +85,15 @@ const translations = {
     modeRaw: '原始点云', modeOverlay: '叠加检查', modeModel: '程序化模型',
     refineModel: '结构绘制', evidenceReview: 'Agent 对比图', fitView: '适配视图', topView: '俯视检查', projectionMode: '投影方式', perspectiveProjection: '透视', orthographicProjection: '平行',
     navigationHelp: '键盘视角操作', navMove: '平移', navElevate: '升降', navLook: '转向', navFast: '加速', navProjection: '切换投影', navViews: '俯视 / 适配',
-    processingStatus: '处理状态', measuredElements: '已测量元素', sceneObjects: '场景对象',
+    processingStatus: '处理状态', measuredElements: '场景元素', sceneObjects: '场景对象',
     viewportLabel: 'Three.js 室内重建视图', loadingScene: '正在读取真实点云与 Semantic Scene…',
-    legendCloud: '彩色点云', legendAccepted: '已接受结构', legendCandidate: '候选/推断结构', legendObject: '程序化元素', legendPath: '相机轨迹',
+    legendCloud: '彩色点云', legendAccepted: '展示结构', legendCandidate: '候选/推断结构', legendObject: '程序化元素', legendPath: '相机轨迹',
     confidenceDefault: '实体结构已通过四门；橙色半透明虚线是待复核推断，叠加检查可见、正式模型自动隐藏。自动墙线不会直接进入模型。',
     confidenceResolved: '所有结构建议均已逐项人工接受或拒绝；当前只显示正式结构、程序化家具与真实点云，无待审橙色候选。',
+    confidenceWip: '当前是实时重建中的展示假设；结构、开口与家具仍在复核，页面更新不代表权威验收通过。',
     inspector: '检查器', selectElement: '请选择一个元素', selectHint: '点击模型或左侧对象列表，查看点云测量值和本地识别依据。',
     qualityLoop: '复核质量循环', visualEvidence: '本地视觉证据', posedPhotos: '位姿照片', evidencePhotoAlt: '最近相机证据帧',
-    evidenceCaptionDefault: '自动选择覆盖范围互补的本地帧，不上传。', previewPoints: '预览点', acceptedStructures: '已接受结构', localElements: '本地元素', estimatedHeight: '估计层高',
+    evidenceCaptionDefault: '自动选择覆盖范围互补的本地帧，不上传。', previewPoints: '预览点', acceptedStructures: '已接受结构', displayStructures: '展示结构', authorityDisplayStructures: '实测权威 / 展示结构', localElements: '本地元素', estimatedHeight: '估计层高',
     all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', generic: '待确认', 'booth-desk': '卡座工作台', tree: '树木', vehicle: '车辆', 'roof-panel': '雨棚屋面', step: '台阶',
     autoReviewed: '自动建议已完成人工取舍', geometryClosed: '几何闭合', publishedClosed: '正式闭合', shapeFailure: '形状失败', retained: '保留',
     evidenceFrame: '证据帧', originalFrame: '原始帧', localPreview: '本地预览', measuredSize: '测量尺寸', localConfidence: '本地置信度', supportPoints: '支持点数',
@@ -104,14 +105,15 @@ const translations = {
     modeRaw: 'Reality Data', modeOverlay: 'AI Comparison', modeModel: 'Delivery Model',
     refineModel: 'Model Refinement', evidenceReview: 'Evidence Review', fitView: 'Fit View', topView: 'Top View', projectionMode: 'Projection mode', perspectiveProjection: 'Perspective', orthographicProjection: 'Parallel',
     navigationHelp: 'Keyboard navigation', navMove: 'Move', navElevate: 'Elevate', navLook: 'Look', navFast: 'Fast', navProjection: 'Projection', navViews: 'Top / Fit',
-    processingStatus: 'Processing Status', measuredElements: 'Measured Elements', sceneObjects: 'Scene Objects',
+    processingStatus: 'Processing Status', measuredElements: 'Scene Elements', sceneObjects: 'Scene Objects',
     viewportLabel: 'Three.js indoor reconstruction viewport', loadingScene: 'Loading the captured point cloud and semantic scene…',
-    legendCloud: 'Color Point Cloud', legendAccepted: 'Accepted Structure', legendCandidate: 'Inferred / Review', legendObject: 'Parametric Objects', legendPath: 'Camera Path',
+    legendCloud: 'Color Point Cloud', legendAccepted: 'Display Geometry', legendCandidate: 'Inferred / Review', legendObject: 'Parametric Objects', legendPath: 'Camera Path',
     confidenceDefault: 'Accepted structures have passed the evidence gates. Orange dashed geometry remains under review and is hidden from the delivery model.',
     confidenceResolved: 'Every structural proposal has been explicitly accepted or rejected. This view contains only approved structure, parametric furniture and captured point-cloud data.',
+    confidenceWip: 'This is a live reconstruction hypothesis. Structure, openings and furniture remain under review; a page update is not authority acceptance.',
     inspector: 'Object Inspector', selectElement: 'Select an object', selectHint: 'Select an object in the model or list to inspect measurements and supporting evidence.',
     qualityLoop: 'Quality Assurance', visualEvidence: 'Spatial Evidence', posedPhotos: 'Registered Photos', evidencePhotoAlt: 'Nearest registered evidence frame',
-    evidenceCaptionDefault: 'Locally selected complementary evidence frames. Nothing is uploaded.', previewPoints: 'Preview Points', acceptedStructures: 'Approved Structures', localElements: 'Reconstructed Objects', estimatedHeight: 'Estimated Height',
+    evidenceCaptionDefault: 'Locally selected complementary evidence frames. Nothing is uploaded.', previewPoints: 'Preview Points', acceptedStructures: 'Approved Structures', displayStructures: 'Display Geometry', authorityDisplayStructures: 'Measured authority / display geometry', localElements: 'Reconstructed Objects', estimatedHeight: 'Estimated Height',
     all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk', tree: 'Tree', vehicle: 'Vehicle', 'roof-panel': 'Roof Panel', step: 'Step',
     autoReviewed: 'AI proposals completed human review', geometryClosed: 'Geometry closure', publishedClosed: 'Approved closure', shapeFailure: 'Shape issue', retained: 'Retained',
     evidenceFrame: 'Evidence Frame', originalFrame: 'Source frame', localPreview: 'Local preview', measuredSize: 'Measured Size', localConfidence: 'Local Confidence', supportPoints: 'Supporting Points',
@@ -905,6 +907,11 @@ function stageClass(status) {
 
 function renderPanels(data) {
   const hasStructureCandidates = (data.structureCandidates || []).length > 0;
+  const hasIncompleteStage = (data.pipeline || []).some((stage) => stage.status !== 'PASS');
+  const displayCount = (data.structures || data.walls || []).length;
+  const reportedAuthorityCount = data.freshAuthorityReview?.acceptedMeasuredWallCount;
+  const hasSeparatedAuthority = Number.isInteger(reportedAuthorityCount);
+  const authorityCount = hasSeparatedAuthority ? reportedAuthorityCount : displayCount;
   const pipeline = data.pipeline.map((stage) => stage.id === 'seed' && !hasStructureCandidates
     ? { ...stage, label: t('autoReviewed'), status: 'PASS' }
     : stage);
@@ -913,12 +920,12 @@ function renderPanels(data) {
   `).join('');
   const candidateLegend = document.querySelector('.viewport-hud .candidate')?.parentElement;
   if (candidateLegend) candidateLegend.hidden = !hasStructureCandidates;
-  if (!hasStructureCandidates) {
-    document.querySelector('.confidence-note').textContent = t('confidenceResolved');
-  }
+  document.querySelector('.confidence-note').textContent = hasStructureCandidates
+    ? t('confidenceDefault')
+    : t(hasIncompleteStage ? 'confidenceWip' : 'confidenceResolved');
   document.querySelector('#scene-stats').innerHTML = `
     <div class="metric"><strong>${data.source.samplePointCount.toLocaleString(currentLanguage)}</strong><span>${t('previewPoints')}</span></div>
-    <div class="metric"><strong>${(data.structures || data.walls).length}</strong><span>${t('acceptedStructures')}</span></div>
+    <div class="metric"><strong>${hasSeparatedAuthority ? `${authorityCount} / ${displayCount}` : displayCount}</strong><span>${t(hasSeparatedAuthority ? 'authorityDisplayStructures' : (hasIncompleteStage ? 'displayStructures' : 'acceptedStructures'))}</span></div>
     <div class="metric"><strong>${data.objects.length}</strong><span>${t('localElements')}</span></div>
     <div class="metric"><strong>${data.levels[0].height.toFixed(2)} m</strong><span>${t('estimatedHeight')}</span></div>
   `;
@@ -964,7 +971,7 @@ function showPhoto(index) {
   if (!photo) return;
   selectedPhotoIndex = index;
   document.querySelector('#evidence-photo').src = photo.path;
-  document.querySelector('#evidence-caption').textContent = `${photo.id} · ${t('originalFrame')} ${photo.sourceFile} · ${t('localPreview')}`;
+  document.querySelector('#evidence-caption').textContent = `${photo.id} · ${t('originalFrame')} ${photo.sourceFile || photo.path || photo.id} · ${t('localPreview')}`;
   document.querySelectorAll('[data-photo-index]').forEach((button) => button.classList.toggle('active', Number(button.dataset.photoIndex) === index));
 }
 
@@ -1341,7 +1348,9 @@ async function init() {
     const pointCloudArtifact = sceneData.artifacts?.pointCloud;
     if (pointCloudArtifact) {
       try {
-        await buildPointCloud(`./${pointCloudArtifact}`);
+        const sceneUrl = new URL(scenePath, window.location.href);
+        const pointCloudUrl = new URL(pointCloudArtifact, sceneUrl).toString();
+        await buildPointCloud(pointCloudUrl);
       } catch (error) {
         console.warn('Point-cloud artifact is unavailable; continuing in semantic-model mode.', error);
         sceneData.portableModelOnly = true;

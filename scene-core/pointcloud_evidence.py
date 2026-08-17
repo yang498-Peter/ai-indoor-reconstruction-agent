@@ -77,8 +77,8 @@ def elevation_colormap(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
         r = np.clip(1.5 * t - 0.25, 0, 1)
         g = np.clip(1.0 - np.abs(2.0 * t - 1.0) * 0.7 + 0.15, 0, 1)
         b = np.clip(1.0 - 1.6 * t, 0, 1)
-        ramp = (np.stack([r, g, b], axis=-1) * 255).astype(np.uint8)
-        out[valid] = ramp[valid]
+        ramp = np.stack([r, g, b], axis=-1)
+        out[valid] = (ramp[valid] * 255).astype(np.uint8)
     return out
 
 

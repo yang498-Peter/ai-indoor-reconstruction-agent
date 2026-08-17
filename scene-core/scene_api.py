@@ -21,8 +21,10 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import secrets
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -491,6 +493,81 @@ def op_reject(scene: dict, args: dict) -> dict:
     return entry
 
 
+def strict_actor_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value or "").strip().casefold()
+    if not re.fullmatch(r"[a-z0-9._-]{3,64}", normalized):
+        raise SceneError("ACTOR_ID_INVALID:use 3-64 ASCII letters, digits, dot, underscore or hyphen")
+    return normalized
+
+
+def op_open_issue(scene: dict, args: dict) -> dict:
+    issues = scene.setdefault("review", {}).setdefault("issues", [])
+    issue_id = str(args.get("id") or "").strip()
+    if not issue_id:
+        raise SceneError("ISSUE_ID_REQUIRED")
+    if any(row.get("id") == issue_id for row in issues):
+        raise SceneError(f"ISSUE_EXISTS:{issue_id}")
+    severity = args.get("severity")
+    if severity not in {"P0", "P1", "P2", "P3"}:
+        raise SceneError(f"ISSUE_SEVERITY_INVALID:{severity}")
+    summary = str(args.get("summary") or "").strip()
+    kind = str(args.get("kind") or "").strip()
+    if not summary or not kind:
+        raise SceneError(f"ISSUE_FIELDS_REQUIRED:{issue_id}")
+    opened_by = strict_actor_key(str(args.get("openedBy") or ""))
+    targets = list(args.get("targetNodeIds") or [])
+    missing = [node_id for node_id in targets if node_id not in scene.get("nodes", {})]
+    if missing:
+        raise SceneError(f"ISSUE_TARGET_MISSING:{issue_id}:{','.join(missing)}")
+    issue = {
+        "id": issue_id, "status": "OPEN", "severity": severity, "kind": kind,
+        "summary": summary, "openedBy": opened_by, "targetNodeIds": targets,
+        "openedAt": now_iso(),
+    }
+    if args.get("area"):
+        issue["area"] = args["area"]
+    issues.append(issue)
+    return issue
+
+
+def op_transition_issue(scene: dict, scene_path: Path, args: dict) -> dict:
+    issue = next((row for row in scene.get("review", {}).get("issues", []) if row.get("id") == args["id"]), None)
+    if issue is None:
+        raise SceneError(f"ISSUE_MISSING:{args['id']}")
+    expected = args.get("expectedStatus")
+    if not expected or issue.get("status") != expected:
+        raise SceneError(f"ISSUE_STATUS_STALE:{args['id']} expected={expected} actual={issue.get('status')}")
+    status = args.get("status")
+    if status not in {"PATCHED", "RESOLVED", "FAIL"}:
+        raise SceneError(f"ISSUE_STATUS_INVALID:{status}")
+    reason = str(args.get("reason") or "").strip()
+    if not reason:
+        raise SceneError(f"ISSUE_REASON_REQUIRED:{args['id']}")
+    reviewer = strict_actor_key(str(args.get("reviewer") or ""))
+    opened_by = strict_actor_key(str(issue.get("openedBy") or "unknown"))
+    if reviewer == opened_by:
+        raise SceneError(f"SELF_REVIEW_FORBIDDEN:{args['id']} openedBy={issue.get('openedBy')}")
+    receipt_path = str(args.get("receiptPath") or "").strip()
+    if not receipt_path:
+        raise SceneError(f"ISSUE_RECEIPT_REQUIRED:{args['id']}")
+    receipt_file = resolve_evidence_file(scene_path, receipt_path)
+    if not receipt_file.is_file():
+        raise SceneError(f"ISSUE_RECEIPT_MISSING:{receipt_path}")
+    digest = hashlib.sha256(receipt_file.read_bytes()).hexdigest()
+    supplied_digest = str(args.get("receiptSha256") or "").lower()
+    if supplied_digest and supplied_digest != digest:
+        raise SceneError(f"ISSUE_RECEIPT_HASH_STALE:{receipt_path}")
+    issue["status"] = status
+    issue["resolution"] = {
+        "previousStatus": expected,
+        "reviewer": reviewer,
+        "reason": reason,
+        "resolvedAt": now_iso(),
+        "receipt": {"path": receipt_path, "sha256": digest},
+    }
+    return issue
+
+
 # ---------------------------------------------------------------------------
 # Queries
 # ---------------------------------------------------------------------------
@@ -549,6 +626,11 @@ def op_summary(scene: dict) -> dict:
     statuses: dict[str, int] = {}
     for node_id, node in scene["nodes"].items():
         counts[node["type"]] = counts.get(node["type"], 0) + 1
+        # Levels are scene containers, not reviewable geometry. Treating a
+        # level without an evidence entry as a candidate creates a permanent
+        # false blocker even when every geometric node has been adjudicated.
+        if node.get("type") == "level":
+            continue
         status = scene.get("evidence", {}).get(node_id, {}).get("status", "candidate")
         statuses[status] = statuses.get(status, 0) + 1
     return {
@@ -590,6 +672,10 @@ def apply_ops(scene: dict, scene_path: Path, ops: list[dict], actor: str) -> lis
             results.append(op_accept(scene, scene_path, payload))
         elif kind == "reject":
             results.append(op_reject(scene, payload))
+        elif kind == "transition_issue":
+            results.append(op_transition_issue(scene, scene_path, payload))
+        elif kind == "open_issue":
+            results.append(op_open_issue(scene, payload))
         else:
             raise SceneError(f"UNKNOWN_OP:{kind}")
     return results
@@ -706,6 +792,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reviewer", required=True)
     p.add_argument("--reason", required=True)
 
+    p = sub.add_parser("transition-issue", help="change an issue state using an independent hash-bound receipt")
+    p.add_argument("--id", required=True)
+    p.add_argument("--expected-status", required=True, choices=["OPEN", "PATCHED", "FAIL"])
+    p.add_argument("--status", required=True, choices=["PATCHED", "RESOLVED", "FAIL"])
+    p.add_argument("--reviewer", required=True)
+    p.add_argument("--reason", required=True)
+    p.add_argument("--receipt-path", required=True)
+    p.add_argument("--receipt-sha256")
+
+    p = sub.add_parser("open-issue", help="open a fail-closed review issue, optionally bound to existing nodes")
+    p.add_argument("--id", required=True)
+    p.add_argument("--severity", required=True, choices=["P0", "P1", "P2", "P3"])
+    p.add_argument("--kind", required=True)
+    p.add_argument("--summary", required=True)
+    p.add_argument("--opened-by", required=True)
+    p.add_argument("--target-node-id", action="append")
+    p.add_argument("--area")
+
     p = sub.add_parser("apply-patch", help="atomic batch of ops from a JSON file: [{\"op\":\"create_wall\",...},...]")
     p.add_argument("--patch", required=True, type=Path)
 
@@ -809,6 +913,16 @@ def main(argv: list[str] | None = None) -> int:
                 "reason": args.reason, "allow_self": args.allow_self,
             }),
             "reject": lambda: op_reject(scene, {"id": args.id, "reviewer": args.reviewer, "reason": args.reason}),
+            "transition-issue": lambda: op_transition_issue(scene, scene_path, {
+                "id": args.id, "expectedStatus": args.expected_status, "status": args.status,
+                "reviewer": args.reviewer, "reason": args.reason,
+                "receiptPath": args.receipt_path, "receiptSha256": args.receipt_sha256,
+            }),
+            "open-issue": lambda: op_open_issue(scene, {
+                "id": args.id, "severity": args.severity, "kind": args.kind,
+                "summary": args.summary, "openedBy": args.opened_by,
+                "targetNodeIds": args.target_node_id or [], "area": args.area,
+            }),
         }
         result = op_map[args.command]()
         save_scene(scene_path, scene, args.actor)

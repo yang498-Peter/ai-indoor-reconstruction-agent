@@ -251,6 +251,14 @@ def h_reject_node(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
     return api.op_reject(scene, args)
 
 
+def h_transition_issue(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
+    return api.op_transition_issue(scene, scene_path, args)
+
+
+def h_open_issue(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
+    return api.op_open_issue(scene, args)
+
+
 def h_apply_patch(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
     results = api.apply_ops(scene, scene_path, args["ops"], actor)
     return {"applied": len(results), "results": results}
@@ -502,12 +510,41 @@ TOOL_SPECS: list[dict] = [
         ["id", "reviewer", "reason"],
     ),
     tool(
+        "transition_issue", "mutate", h_transition_issue,
+        "Transition an existing review issue using optimistic old-status matching and an independent, "
+        "hash-bound receipt. This never infers that an issue is resolved from geometry state alone.",
+        {
+            "id": {"type": "string", "description": "Existing issue id."},
+            "expectedStatus": {"type": "string", "enum": ["OPEN", "PATCHED", "FAIL"]},
+            "status": {"type": "string", "enum": ["PATCHED", "RESOLVED", "FAIL"]},
+            "reviewer": {"type": "string", "description": "Independent reviewer id."},
+            "reason": {"type": "string", "description": "Evidence-bounded transition reason."},
+            "receiptPath": {"type": "string", "description": "Receipt relative to scene/work root."},
+            "receiptSha256": {"type": "string", "description": "Optional pinned receipt SHA-256."},
+        },
+        ["id", "expectedStatus", "status", "reviewer", "reason", "receiptPath"],
+    ),
+    tool(
+        "open_issue", "mutate", h_open_issue,
+        "Open an explicit review issue. Target ids, when provided, must already exist; duplicate issue ids fail.",
+        {
+            "id": {"type": "string"},
+            "severity": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+            "kind": {"type": "string"},
+            "summary": {"type": "string"},
+            "openedBy": {"type": "string"},
+            "targetNodeIds": {"type": "array", "items": {"type": "string"}},
+            "area": {"type": "string"},
+        },
+        ["id", "severity", "kind", "summary", "openedBy"],
+    ),
+    tool(
         "apply_patch", "mutate", h_apply_patch,
         "Apply an atomic batch of operations. Each op is an object with an \"op\" key plus that "
         "operation's arguments, e.g. {\"op\": \"create_wall\", \"start\": [0, 0], \"end\": [8.5, 0]}. "
         "Supported ops: create_wall, add_door, add_window, add_opening, add_item, add_slab, "
         "add_ceiling, add_zone, add_column, update_node, delete_node, attach_evidence, accept, "
-        "reject. If any op or the final validation fails, nothing is written.",
+        "reject, open_issue, transition_issue. If any op or the final validation fails, nothing is written.",
         {
             "ops": {
                 "type": "array",

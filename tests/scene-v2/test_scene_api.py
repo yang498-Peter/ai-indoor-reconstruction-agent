@@ -46,6 +46,58 @@ class SceneApiTest(unittest.TestCase):
         path.write_text(json.dumps({"kind": "test"}), encoding="utf-8")
         return name
 
+    def test_summary_excludes_level_container_from_evidence_statuses(self):
+        summary = api.op_summary(self.scene)
+        self.assertEqual(summary["nodeCounts"], {"level": 1})
+        self.assertEqual(summary["evidenceStatuses"], {})
+
+        self.make_wall()
+        summary = api.op_summary(self.scene)
+        self.assertEqual(summary["evidenceStatuses"], {"candidate": 1})
+
+    def test_issue_transition_requires_independent_hash_bound_receipt(self):
+        self.scene["review"]["issues"].append({
+            "id": "I-test", "status": "OPEN", "severity": "P1",
+            "summary": "needs reconciliation", "openedBy": "author-a",
+        })
+        receipt = self.make_evidence_file("issue-receipt.json")
+
+        with self.assertRaises(api.SceneError) as ctx:
+            api.op_transition_issue(self.scene, self.scene_path, {
+                "id": "I-test", "expectedStatus": "OPEN", "status": "RESOLVED",
+                "reviewer": "author-a", "reason": "self review", "receiptPath": receipt,
+            })
+        self.assertIn("SELF_REVIEW_FORBIDDEN", str(ctx.exception))
+        self.assertEqual(self.scene["review"]["issues"][0]["status"], "OPEN")
+
+        result = api.op_transition_issue(self.scene, self.scene_path, {
+            "id": "I-test", "expectedStatus": "OPEN", "status": "RESOLVED",
+            "reviewer": "independent-reviewer", "reason": "receipt reconciles every named family",
+            "receiptPath": receipt,
+        })
+        self.assertEqual(result["status"], "RESOLVED")
+        self.assertEqual(result["resolution"]["previousStatus"], "OPEN")
+        self.assertEqual(len(result["resolution"]["receipt"]["sha256"]), 64)
+
+    def test_open_issue_refuses_duplicate_or_missing_target(self):
+        result = api.op_open_issue(self.scene, {
+            "id": "I-withheld", "severity": "P2", "kind": "withheld-scope",
+            "summary": "unobserved member remains withheld", "openedBy": "author-a",
+        })
+        self.assertEqual(result["status"], "OPEN")
+        with self.assertRaises(api.SceneError) as ctx:
+            api.op_open_issue(self.scene, {
+                "id": "I-withheld", "severity": "P2", "kind": "withheld-scope",
+                "summary": "duplicate", "openedBy": "author-a",
+            })
+        self.assertIn("ISSUE_EXISTS", str(ctx.exception))
+        with self.assertRaises(api.SceneError) as ctx:
+            api.op_open_issue(self.scene, {
+                "id": "I-missing-target", "severity": "P1", "kind": "withheld-scope",
+                "summary": "bad target", "openedBy": "author-a", "targetNodeIds": ["item_missing"],
+            })
+        self.assertIn("ISSUE_TARGET_MISSING", str(ctx.exception))
+
     def test_wall_and_hosted_door_validate(self):
         self.make_wall()
         api.op_add_opening(self.scene, "door", {
