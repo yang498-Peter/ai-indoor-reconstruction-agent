@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import math
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+import laspy
+import numpy as np
+
+
+CORE = Path(__file__).resolve().parents[2] / "scene-core"
+
+
+def load(name: str):
+    spec = importlib.util.spec_from_file_location(name, CORE / f"{name}.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+capture_index = load("capture_index")
+proposals = load("structural_proposals")
+metrics = load("pointcloud_scene_metrics")
+scene_api = load("scene_api")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def synthetic_room(path: Path) -> tuple[float, float]:
+    """Write a large-coordinate, two-face rectangular room for numeric tests."""
+    origin_x = 500_000.0
+    origin_y = 7_000_000.0
+    point_rows: list[tuple[float, float, float]] = []
+    z_values = np.linspace(0.35, 2.55, 12)
+
+    for x in np.linspace(origin_x, origin_x + 6.0, 121):
+        for y in (origin_y - 0.10, origin_y + 0.10, origin_y + 3.90, origin_y + 4.10):
+            point_rows.extend((x, y, float(z)) for z in z_values)
+    for y in np.linspace(origin_y, origin_y + 4.0, 81):
+        for x in (origin_x - 0.10, origin_x + 0.10, origin_x + 5.90, origin_x + 6.10):
+            point_rows.extend((x, y, float(z)) for z in z_values)
+
+    # A low, dense interior object must not become a structural wall proposal.
+    for x in np.linspace(origin_x + 2.2, origin_x + 3.8, 30):
+        for y in np.linspace(origin_y + 1.6, origin_y + 2.4, 18):
+            point_rows.append((float(x), float(y), 0.75))
+
+    xyz = np.asarray(point_rows, dtype=np.float64)
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = np.asarray([0.001, 0.001, 0.001])
+    header.offsets = np.asarray([origin_x, origin_y, 0.0])
+    las = laspy.LasData(header)
+    las.x, las.y, las.z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    las.red = np.full(len(xyz), 42_000, dtype=np.uint16)
+    las.green = np.full(len(xyz), 35_000, dtype=np.uint16)
+    las.blue = np.full(len(xyz), 28_000, dtype=np.uint16)
+    las.write(path)
+    return origin_x, origin_y
+
+
+class CaptureIndexTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.las = self.root / "room.las"
+        self.origin_x, self.origin_y = synthetic_room(self.las)
+        self.source_hash = sha256(self.las)
+        self.index_dir = self.root / "capture-index"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_index_is_source_read_only_local_and_large_coordinate_safe(self):
+        manifest = capture_index.build_index(
+            self.las,
+            self.index_dir,
+            tile_size_m=2.0,
+            every=1,
+        )
+        self.assertEqual(sha256(self.las), self.source_hash)
+        self.assertEqual(manifest["format"], "capture-index-v1")
+        self.assertGreater(len(manifest["tiles"]), 4)
+
+        index = capture_index.CaptureIndex.open(self.index_dir, validate_source=True)
+        result = index.query_bbox(
+            self.origin_x + 0.8,
+            self.origin_y - 0.3,
+            self.origin_x + 1.2,
+            self.origin_y + 0.3,
+            z_min=0.3,
+            z_max=2.6,
+        )
+        self.assertGreater(result.point_count, 0)
+        self.assertLess(result.stats["pointsRead"], manifest["indexedPointCount"])
+        self.assertLess(float(np.max(np.abs((result.x - self.origin_x) * 1000 - np.rint((result.x - self.origin_x) * 1000)))), 1e-4)
+        self.assertLess(float(np.max(np.abs((result.y - self.origin_y) * 1000 - np.rint((result.y - self.origin_y) * 1000)))), 1e-4)
+
+    def test_source_identity_change_invalidates_cache(self):
+        capture_index.build_index(self.las, self.index_dir, tile_size_m=2.0, every=1)
+        index = capture_index.CaptureIndex.open(self.index_dir, validate_source=True)
+        index.validate_source()
+        stat = self.las.stat()
+        os.utime(self.las, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        with self.assertRaises(capture_index.CaptureIndexError):
+            index.validate_source()
+
+
+class GeometryProposalAndMetricTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.las = self.root / "room.las"
+        self.origin_x, self.origin_y = synthetic_room(self.las)
+        self.index_dir = self.root / "capture-index"
+        capture_index.build_index(self.las, self.index_dir, tile_size_m=2.0, every=1)
+        self.index = capture_index.CaptureIndex.open(self.index_dir)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_face_pairing_preserves_raw_measurement_and_suggests_centerline(self):
+        faces = [
+            proposals.LineObservation.from_endpoints([0.0, -0.1], [6.0, -0.1], support_count=400),
+            proposals.LineObservation.from_endpoints([0.0, 0.1], [6.0, 0.1], support_count=380),
+        ]
+        walls = proposals.pair_wall_faces(faces, min_thickness_m=0.08, max_thickness_m=0.35)
+        self.assertEqual(len(walls), 1)
+        self.assertAlmostEqual(walls[0]["thicknessM"], 0.2, places=3)
+        self.assertAlmostEqual(walls[0]["rawCenterline"]["start"][1], 0.0, places=3)
+        self.assertEqual(len(walls[0]["sourceFaceIds"]), 2)
+
+    def test_global_proposals_find_room_axis_families_without_accepting_them(self):
+        report = proposals.build_proposals(
+            self.index,
+            floor_z=0.0,
+            band_min_m=0.45,
+            band_max_m=2.45,
+            raster_cell_m=0.04,
+            min_length_m=1.0,
+            max_points=100_000,
+        )
+        angles = [family["angleDeg"] % 180.0 for family in report["axisFamilies"]]
+        self.assertTrue(any(min(abs(angle), abs(angle - 180.0)) <= 3.0 for angle in angles))
+        self.assertTrue(any(abs(angle - 90.0) <= 3.0 for angle in angles))
+        self.assertGreaterEqual(len(report["wallCandidates"]), 4)
+        self.assertTrue(all(item["status"] == "candidate" for item in report["wallCandidates"]))
+        self.assertTrue(all("rawCenterline" in item and "suggestedCenterline" in item for item in report["wallCandidates"]))
+
+    def _scene_with_south_wall(self, shift_y: float = 0.0) -> dict:
+        scene = scene_api.new_scene("synthetic-room", 2.8, 0.0, "author-a")
+        level = scene_api.default_level_id(scene)
+        scene_api.op_create_wall(scene, {
+            "id": "wall_south",
+            "start": [self.origin_x, self.origin_y + shift_y],
+            "end": [self.origin_x + 6.0, self.origin_y + shift_y],
+            "height": 2.8,
+            "thickness": 0.2,
+            "level": level,
+        }, "author-a")
+        scene["evidence"]["wall_south"]["status"] = "accepted-measured"
+        return scene
+
+    def test_pointcloud_metric_is_a_hard_gate_and_binds_scene_and_index(self):
+        good = metrics.evaluate_scene(
+            self._scene_with_south_wall(),
+            self.index,
+            residual_p90_max_m=0.06,
+            support_ratio_min=0.80,
+        )
+        self.assertEqual(good["status"], "PASS")
+        self.assertEqual(good["wallMetrics"][0]["status"], "PASS")
+        self.assertEqual(good["indexFingerprint"], self.index.manifest["indexFingerprint"])
+
+        shifted = metrics.evaluate_scene(
+            self._scene_with_south_wall(shift_y=0.35),
+            self.index,
+            residual_p90_max_m=0.06,
+            support_ratio_min=0.80,
+        )
+        self.assertEqual(shifted["status"], "FAIL")
+        self.assertTrue(shifted["hardGateFailures"])
+        self.assertGreater(shifted["wallMetrics"][0]["residualP90M"], 0.06)
+
+
+if __name__ == "__main__":
+    unittest.main()
