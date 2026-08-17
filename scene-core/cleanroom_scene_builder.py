@@ -317,7 +317,7 @@ def _scene_layers(
             "material": {"color": "#d8d2c7", "roughness": 0.82},
             "meta": {
                 "createdBy": "cleanroom-builder",
-                "note": "consolidated only from current raw-derived proposals",
+                "note": wall.get("inferenceReason", "consolidated only from current raw-derived proposals"),
                 "sourceProposalIds": wall["sourceProposalIds"],
             },
         }
@@ -334,8 +334,11 @@ def _scene_layers(
         inferred = json.loads(json.dumps(common))
         inferred["inference"] = {
             "confidenceClass": "supported-inferred", "confidence": round(float(wall["confidence"]), 4),
-            "confidenceIntervalM": [0.04, 0.18],
-            "inferenceReason": "collinear raw structural returns consolidated on a current-capture axis family",
+            "confidenceIntervalM": wall.get("confidenceIntervalM", [0.04, 0.18]),
+            "inferenceReason": wall.get(
+                "inferenceReason",
+                "collinear raw structural returns consolidated on a current-capture axis family",
+            ),
             "authorityRefs": [wall_id],
         }
         _add(hypothesis, inferred, {"status": "accepted-inferred", "sources": sources, "reviewer": "cleanroom-builder"})

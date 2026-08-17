@@ -268,17 +268,26 @@ def _author_walls(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     for segment in payload.get("segments", []):
         start = np.asarray(segment["start"], dtype=np.float64)
         end = np.asarray(segment["end"], dtype=np.float64)
-        walls.append({
+        wall = {
             "start": start, "end": end, "thickness": float(segment["thickness"]),
             "height": float(segment["height"]), "confidence": float(segment["confidence"]),
-            "residualP90M": 0.10, "supportPointCount": 0,
-            "sourceProposalIds": [str(segment["id"])], "pairedFaceSupport": False,
+            "residualP90M": float(segment.get("residualP90M", 0.10)),
+            "supportPointCount": int(segment.get("supportPointCount", 0)),
+            "sourceProposalIds": [str(value) for value in segment.get(
+                "sourceProposalIds", [segment["id"]]
+            )],
+            "pairedFaceSupport": bool(segment.get("pairedFaceSupport", False)),
             "role": str(segment["role"]), "wallKind": str(segment["wallKind"]),
             "authorityStatus": str(segment["authorityStatus"]),
             "presentationStatus": str(segment["presentationStatus"]),
             "evidence": segment["evidence"], "openings": segment.get("openings", []),
             "frameSpacingM": segment.get("frameSpacingM"),
-        })
+        }
+        if segment.get("inferenceReason") is not None:
+            wall["inferenceReason"] = segment["inferenceReason"]
+        if segment.get("confidenceIntervalM") is not None:
+            wall["confidenceIntervalM"] = segment["confidenceIntervalM"]
+        walls.append(wall)
     return walls, payload
 
 
@@ -364,10 +373,14 @@ def _panorama_room_band(
         normal *= -1.0
     pier_width = float(config.get("pierWidthM", 0.34))
     panorama = config["evidence"]
+    completion = config.get("coherentCompletion") or {}
+    complete_rooms = completion.get("enabled") is True
 
     def record(a: np.ndarray, b: np.ndarray, *, role: str, kind: str, thickness: float,
                height: float, confidence: float, frame_spacing: float | None = None,
-               presentation_status: str = "accepted-inferred") -> dict[str, Any]:
+               presentation_status: str = "accepted-inferred",
+               inference_reason: str | None = None,
+               confidence_interval: list[float] | None = None) -> dict[str, Any]:
         return {
             "start": a, "end": b, "thickness": thickness,
             "confidence": confidence, "residualP90M": float(facade.get("residualP90M", 0.18)),
@@ -375,6 +388,10 @@ def _panorama_room_band(
             "pairedFaceSupport": False, "sourceProposalIds": ["panorama-room-band"],
             "role": role, "wallKind": kind, "height": height,
             "authorityStatus": "candidate", "presentationStatus": presentation_status,
+            "inferenceReason": inference_reason or (
+                "panorama-visible construction family aligned to current-capture structural proposals"
+            ),
+            "confidenceIntervalM": confidence_interval or [0.08, 0.24],
             "evidence": {
                 "path": panorama["path"], "sha256": panorama["sha256"],
                 "observation": panorama["observation"],
@@ -419,7 +436,7 @@ def _panorama_room_band(
                 divider_start, divider_end,
                 role=f"panorama-rear-divider-{index}", kind="solid", thickness=0.12,
                 height=3.09, confidence=float(candidate.get("confidence", 0.55)),
-                presentation_status="candidate",
+                presentation_status=str(completion.get("rawDividerStatus", "candidate")) if complete_rooms else "candidate",
             )
             divider["sourceProposalIds"] = [str(candidate["id"])]
             divider["residualP90M"] = float(candidate.get("fitResidualP90M", 0.18))
@@ -435,12 +452,63 @@ def _panorama_room_band(
             np.asarray(candidate["suggestedCenterline"]["end"], dtype=np.float64),
             role=f"panorama-rear-glazing-{index}", kind="glass", thickness=0.06,
             height=2.85, confidence=float(candidate.get("confidence", 0.55)),
-            presentation_status="candidate",
+            presentation_status=str(completion.get("rawRearStatus", "candidate")) if complete_rooms else "candidate",
         )
         rear["sourceProposalIds"] = [str(candidate["id"])]
         rear["residualP90M"] = float(candidate.get("fitResidualP90M", 0.18))
         rear["supportPointCount"] = int(candidate.get("supportPointCount", 0))
         result.append(rear)
+    if complete_rooms:
+        rear_samples: list[float] = []
+        for proposal_id in config.get("rearProposalIds", []):
+            candidate = candidate_by_id[str(proposal_id)]
+            line = candidate["suggestedCenterline"]
+            for point in (line["start"], line["end"]):
+                rear_samples.append(float(np.dot(np.asarray(point, dtype=np.float64) - start, normal)))
+        configured_depth = completion.get("rearDepthM")
+        rear_depth = float(configured_depth) if configured_depth is not None else float(np.median(rear_samples))
+        rear_depth = float(np.clip(rear_depth, 1.8, 5.5))
+        completion_reason = (
+            "AI coherent-room completion: a robust rear-plane offset from raw rear fragments is extended "
+            "across scan gaps; this is presentation inference, not measured authority geometry"
+        )
+        rear_wall = record(
+            start + normal * rear_depth, end + normal * rear_depth,
+            role="panorama-inferred-rear-envelope", kind=str(completion.get("rearWallKind", "glass")),
+            thickness=float(completion.get("rearThicknessM", 0.10)), height=3.09,
+            confidence=float(completion.get("confidence", 0.67)), frame_spacing=1.35,
+            presentation_status=str(completion.get("rearEnvelopeStatus", "candidate")),
+            inference_reason=completion_reason, confidence_interval=[0.25, 0.45],
+        )
+        rear_wall["sourceProposalIds"] = [str(value) for value in config.get("rearProposalIds", [])]
+        result.append(rear_wall)
+
+        internal_offsets = sorted({
+            float(np.clip(spec[0], 0.0, length)) for spec in divider_specs
+            if pier_width < spec[0] < length - pier_width
+        })
+        for index, offset in enumerate(internal_offsets, 1):
+            completed = record(
+                start + direction * offset,
+                start + direction * offset + normal * rear_depth,
+                role=f"panorama-inferred-full-divider-{index}", kind="solid", thickness=0.12,
+                height=3.09, confidence=float(completion.get("dividerConfidence", 0.64)),
+                inference_reason=completion_reason, confidence_interval=[0.20, 0.42],
+            )
+            nearest = min(divider_specs, key=lambda spec: abs(spec[0] - offset))
+            completed["sourceProposalIds"] = [str(nearest[3]["id"])]
+            result.append(completed)
+
+        if completion.get("closeBandEnds", True):
+            for role, offset in (("west", 0.0), ("east", length)):
+                result.append(record(
+                    start + direction * offset,
+                    start + direction * offset + normal * rear_depth,
+                    role=f"panorama-inferred-{role}-sidewall", kind="solid", thickness=0.14,
+                    height=3.09, confidence=float(completion.get("sidewallConfidence", 0.58)),
+                    presentation_status=str(completion.get("sidewallStatus", "candidate")),
+                    inference_reason=completion_reason, confidence_interval=[0.28, 0.55],
+                ))
     return result, True
 
 
@@ -530,6 +598,35 @@ def _furniture_items(
         cv2.polylines(debug, [box_px], True, (0, 180, 255), 2, cv2.LINE_AA)
     cv2.imwrite(str(output / "evidence" / "furniture-support.png"), debug)
     return sorted(items, key=lambda item: (item["center"][1], item["center"][0]))[:28]
+
+
+def _north_room_topology(walls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    role_to_id = {
+        wall["role"]: f"wall_clean{index:03d}" for index, wall in enumerate(walls, 1)
+        if wall.get("presentationStatus") == "accepted-inferred"
+    }
+    front_roles = sorted(
+        (role for role in role_to_id if role.startswith("panorama-glass-span-")),
+        key=lambda role: int(role.rsplit("-", 1)[1]),
+    )
+    divider_roles = ["panorama-inferred-west-sidewall"] + sorted(
+        (role for role in role_to_id if role.startswith("panorama-inferred-full-divider-")),
+        key=lambda role: int(role.rsplit("-", 1)[1]),
+    ) + ["panorama-inferred-east-sidewall"]
+    rear_role = "panorama-inferred-rear-envelope"
+    if rear_role not in role_to_id or len(divider_roles) != len(front_roles) + 1:
+        return []
+    if any(role not in role_to_id for role in divider_roles):
+        return []
+    return [{
+        "id": f"north_room_{index:02d}",
+        "boundaryNodeIds": [
+            role_to_id[front_role], role_to_id[divider_roles[index]],
+            role_to_id[rear_role], role_to_id[divider_roles[index - 1]],
+        ],
+        "status": "accepted-inferred", "confidence": 0.62,
+        "reason": "coherent panorama room-band completion; boundary depth remains inferred",
+    } for index, front_role in enumerate(front_roles, 1)]
 
 
 def _conservative_display_items(
@@ -712,7 +809,10 @@ def build(
                 scene["evidence"][node["id"]] = {
                     "status": evidence_status,
                     "sources": existing_sources + [local_source],
-                    "reason": "agent-authored clean-room macro interpretation; authority remains conservative",
+                    "reason": wall.get(
+                        "inferenceReason",
+                        "agent-authored clean-room macro interpretation; authority remains conservative",
+                    ),
                 }
                 for opening in wall.get("openings", []):
                     opening_id = str(opening["id"])
@@ -781,6 +881,10 @@ def build(
                 ],
                 "reason": "visual-inferred furniture pending instance-level raw fit and collision review",
             }
+
+    inferred_spaces = _north_room_topology(walls)
+    for scene in (hypothesis, presentation):
+        scene["review"]["topology"]["spaces"] = inferred_spaces
 
     base._atomic_json(output / "scene-authority.json", authority)
     authority_sha = _sha256(output / "scene-authority.json")
