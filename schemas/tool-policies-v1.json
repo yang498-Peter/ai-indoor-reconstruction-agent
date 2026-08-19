@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "1.0",
+  "artifactType": "tool-policies-v1",
+  "policies": {
+    "author-v1": {
+      "operations": [
+        "scene:create",
+        "scene:mutate",
+        "scene:delete",
+        "scene:undo",
+        "evidence:attach",
+        "pipeline:open-issue",
+        "pipeline:update-stage",
+        "pipeline:patch",
+        "pipeline:restore",
+        "pipeline:invalidate"
+      ]
+    },
+    "reviewer-readonly-v1": {
+      "operations": [
+        "scene:read",
+        "evidence:read",
+        "pointcloud:query",
+        "render:write-derivative",
+        "pipeline:submit-verdict"
+      ]
+    },
+    "deterministic-checker-v1": {
+      "operations": [
+        "scene:read",
+        "evidence:read",
+        "pointcloud:query",
+        "render:write-derivative",
+        "pipeline:submit-verdict"
+      ]
+    },
+    "publisher-v1": {
+      "operations": [
+        "scene:read",
+        "evidence:read",
+        "pipeline:publish"
+      ]
+    }
+  }
+}

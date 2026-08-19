@@ -96,7 +96,7 @@ def _evidence_file_errors(scene: dict[str, Any], scene_path: Path) -> list[str]:
                 errors.append(f"EVIDENCE_SOURCE_INVALID:{node_id}:{index}")
                 continue
             source_path = source.get("path")
-            source_sha = source.get("sha256")
+            source_sha = source.get("contentSha256")
             if status == "accepted-measured" and (
                 not isinstance(source_path, str)
                 or not source_path
@@ -112,8 +112,10 @@ def _evidence_file_errors(scene: dict[str, Any], scene_path: Path) -> list[str]:
                 errors.append(f"EVIDENCE_FILE_MISSING:{node_id}:{index}")
                 continue
             actual = _sha256_bytes(resolved.read_bytes())
-            if source_sha != actual:
+            if source_sha != actual or source.get("sha256") != actual:
                 errors.append(f"EVIDENCE_HASH_STALE:{node_id}:{index}")
+            if not source.get("lineageId") or not source.get("rootContentSha256s") or not source.get("producer"):
+                errors.append(f"EVIDENCE_PROVENANCE_INCOMPLETE:{node_id}:{index}")
     return errors
 
 
@@ -133,6 +135,9 @@ def evaluate_scene(
         )
 
     errors: list[str] = []
+    authority_layer_valid = scene.get("sceneLayer", "authority") == "authority"
+    if not authority_layer_valid:
+        errors.append("SCENE_LAYER_NOT_AUTHORITY")
     try:
         api.validate_scene(scene)
         scene_valid = True
@@ -176,22 +181,75 @@ def evaluate_scene(
     evidence_file_errors = _evidence_file_errors(scene, scene_path)
     errors.extend(evidence_file_errors)
 
+    accepted_entries = [
+        (node_id, entry)
+        for node_id, entry in evidence.items()
+        if entry.get("status") in {"accepted-measured", "accepted-inferred"}
+    ]
+    claims_current = True
+    accepted_source_digests_current = True
+    evidence_lineages_distinct = True
+    for node_id, entry in accepted_entries:
+        try:
+            current_claim = api.claim_payload(scene, node_id)
+            if (
+                entry.get("claimSnapshot") != current_claim
+                or entry.get("claimHash") != api.claim_hash(scene, node_id)
+            ):
+                claims_current = False
+        except api.SceneError:
+            claims_current = False
+        sources = entry.get("sources", [])
+        if entry.get("acceptedSourceDigest") != api._accepted_source_digest(sources):
+            accepted_source_digests_current = False
+        if entry.get("status") == "accepted-inferred":
+            lineages = {source.get("lineageId") for source in sources if source.get("contentSha256")}
+            contents = {source.get("contentSha256") for source in sources if source.get("contentSha256")}
+            if (
+                len(lineages) < 2
+                or len(contents) < 2
+                or not api.has_two_independent_sources(sources)
+            ):
+                evidence_lineages_distinct = False
+    if not claims_current:
+        errors.append("ACCEPTED_CLAIMS_STALE")
+    if not accepted_source_digests_current:
+        errors.append("ACCEPTED_SOURCE_DIGESTS_STALE")
+    if not evidence_lineages_distinct:
+        errors.append("EVIDENCE_LINEAGES_NOT_DISTINCT")
+
     reviewer = review.get("reviewer")
     reviewed_at = _parse_time(review.get("reviewedAt"))
-    review_identity_valid = (
-        isinstance(reviewer, dict)
-        and isinstance(reviewer.get("actorId"), str)
-        and len(reviewer["actorId"].strip()) >= 3
-        and isinstance(reviewer.get("runId"), str)
-        and len(reviewer["runId"].strip()) >= 16
-        and reviewer.get("role") == "reviewer"
-        and isinstance(reviewer.get("provider"), str)
-        and bool(reviewer["provider"].strip())
-        and reviewed_at is not None
-        and reviewed_at <= datetime.now(timezone.utc)
-    )
+    review_identity_valid = False
+    review_identity_independent = False
+    try:
+        normalized_reviewer = api.execution_identity_api.normalize_identity(reviewer)
+        if normalized_reviewer["role"] not in api.execution_identity_api.REVIEW_ROLES:
+            raise api.execution_identity_api.IdentityError("EXECUTION_ROLE_NOT_ALLOWED")
+        review_identity_valid = reviewed_at is not None and reviewed_at <= datetime.now(timezone.utc)
+        author_identities = []
+        executions = scene.get("meta", {}).get("executions", {})
+        for node_id, entry in evidence.items():
+            if entry.get("status") not in {"accepted-measured", "accepted-inferred"}:
+                continue
+            run_id = nodes.get(node_id, {}).get("meta", {}).get("createdRunId")
+            author = executions.get(run_id)
+            if isinstance(author, dict):
+                author_identities.append(author)
+        for author in author_identities:
+            api.execution_identity_api.require_independent_reviewer(
+                author,
+                normalized_reviewer,
+                severity="P1",
+                required_input_digests={artifact_sha256, geometry_digest, evidence_digest},
+            )
+        review_identity_independent = bool(author_identities)
+    except (api.execution_identity_api.IdentityError, TypeError, ValueError):
+        review_identity_valid = False
     if not review_identity_valid:
         errors.append("REVIEW_IDENTITY_INVALID")
+    if not review_identity_independent:
+        errors.append("REVIEW_IDENTITY_NOT_INDEPENDENT")
 
     review_binding_valid = (
         review.get("geometryDigest") == geometry_digest
@@ -207,11 +265,16 @@ def evaluate_scene(
 
     checks = {
         "sceneV2Valid": scene_valid,
+        "authorityLayerValid": authority_layer_valid,
         "unresolvedEvidenceCount": len(unresolved),
         "declaredSpaceCount": len(spaces) if isinstance(spaces, list) else 0,
         "blockingIssueCount": len(blocking_issues),
         "evidenceFilesValid": not evidence_file_errors,
+        "claimsCurrent": claims_current,
+        "acceptedSourceDigestsCurrent": accepted_source_digests_current,
+        "evidenceLineagesDistinct": evidence_lineages_distinct,
         "reviewIdentityValid": review_identity_valid,
+        "reviewIdentityIndependent": review_identity_independent,
         "reviewBindingCurrent": review_binding_valid,
         "reviewHasNoP0P1": no_review_findings,
     }

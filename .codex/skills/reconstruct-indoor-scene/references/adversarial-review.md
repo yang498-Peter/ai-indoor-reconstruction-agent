@@ -1,10 +1,13 @@
 # Adversarial review
 
-Use independent reviewers across regions. A reviewer must inspect raw artifacts before overlays and must not edit the authoritative resolution ledger.
+Use independent reviewers across regions. A reviewer must inspect raw artifacts before overlays and run under `reviewer-readonly-v1`; it may submit verdicts but cannot edit authority, evidence or author checkpoints. Independence requires distinct actor and execution run IDs. P0/P1 requires a regional or adversarial reviewer class.
 
 ## Attack checklist
 
 - candidate count was forced to zero by accepting weak geometry;
+- one evidence file, duplicate bytes or same-root derived crops were counted as independent sources;
+- an accepted claim survived a geometry, hosted-opening, topology or coordinate-frame change;
+- one orchestration run renamed its actor and reviewed its own output;
 - accepted line lies on furniture, blinds, a ceiling remnant, or a parallel interior face;
 - exterior versus interior facade face was confused;
 - partition endpoints close mathematically but miss visible wall returns;

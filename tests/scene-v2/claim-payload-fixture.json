@@ -1,0 +1,100 @@
+{
+  "scene": {
+    "schemaVersion": "2.0",
+    "coordinateFrame": {
+      "authority": "source-plan-meters-z-up",
+      "display": "three-y-up"
+    },
+    "nodes": {
+      "level_1": {
+        "id": "level_1",
+        "type": "level",
+        "parentId": null,
+        "children": ["wall_a"],
+        "elevation": 0.0,
+        "height": 3.0
+      },
+      "wall_a": {
+        "id": "wall_a",
+        "type": "wall",
+        "parentId": "level_1",
+        "children": ["door_a"],
+        "start": [0.0, 0.0],
+        "end": [4.0, 0.0],
+        "height": 3.0,
+        "thickness": 0.12
+      },
+      "door_a": {
+        "id": "door_a",
+        "type": "door",
+        "parentId": "wall_a",
+        "children": [],
+        "hostOffsetM": 2.0,
+        "width": 0.9,
+        "height": 2.1,
+        "sillHeight": 0.0
+      }
+    },
+    "review": {
+      "topology": {
+        "spaces": [
+          {
+            "id": "space_main",
+            "boundaryNodeIds": ["wall_a"]
+          }
+        ]
+      }
+    }
+  },
+  "wallClaim": {
+    "schemaVersion": "2.0",
+    "coordinateFrame": {
+      "authority": "source-plan-meters-z-up",
+      "display": "three-y-up"
+    },
+    "nodeId": "wall_a",
+    "nodeClaim": {
+      "id": "wall_a",
+      "type": "wall",
+      "parentId": "level_1",
+      "children": ["door_a"],
+      "start": [0.0, 0.0],
+      "end": [4.0, 0.0],
+      "height": 3.0,
+      "thickness": 0.12
+    },
+    "dependencyClaims": [
+      {
+        "nodeId": "level_1",
+        "claim": {
+          "id": "level_1",
+          "type": "level",
+          "parentId": null,
+          "elevation": 0.0,
+          "height": 3.0
+        }
+      }
+    ],
+    "hostedChildrenClaims": [
+      {
+        "nodeId": "door_a",
+        "claim": {
+          "id": "door_a",
+          "type": "door",
+          "parentId": "wall_a",
+          "children": [],
+          "hostOffsetM": 2.0,
+          "width": 0.9,
+          "height": 2.1,
+          "sillHeight": 0.0
+        }
+      }
+    ],
+    "topologyClaims": [
+      {
+        "id": "space_main",
+        "boundaryNodeIds": ["wall_a"]
+      }
+    ]
+  }
+}

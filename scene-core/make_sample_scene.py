@@ -16,6 +16,7 @@ import argparse
 import json
 import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -23,6 +24,28 @@ import scene_api  # noqa: E402
 
 AUTHOR = "sample-author"
 REVIEWER = "sample-reviewer"
+
+
+def execution(actor, run_id, role, policy, reviewer_class=None):
+    value = {
+        "schemaVersion": "1.0", "actorId": actor, "runId": run_id, "role": role,
+        "provider": "sample-generator", "model": "deterministic-local", "policyId": policy,
+        "toolPolicyHash": scene_api.execution_identity_api.policy_digest(policy),
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "attestation": {"issuer": "sample-generator", "enforcementMode": "application-enforced"},
+    }
+    if reviewer_class:
+        value["reviewerClass"] = reviewer_class
+    return value
+
+
+AUTHOR_EXECUTION = execution(
+    AUTHOR, "11111111-1111-4111-8111-111111111111", "author", "author-v1",
+)
+REVIEW_EXECUTION = execution(
+    REVIEWER, "22222222-2222-4222-8222-222222222222",
+    "reviewer", "reviewer-readonly-v1", "regional",
+)
 
 
 def write_receipts(output: Path) -> list[str]:
@@ -53,9 +76,12 @@ def accept_measured(scene: dict, scene_path: Path, node_id: str, receipt_paths: 
             "id": node_id,
             "type": "synthetic-sample",
             "path": receipt,
+            "producer": "sample-generator",
             "note": "sample receipt" if index == 0 else "sample cross-check",
         })
-    scene_api.op_accept(scene, scene_path, {"id": node_id, "mode": "measured", "reviewer": REVIEWER})
+    scene_api.op_accept(scene, scene_path, {
+        "id": node_id, "mode": "measured", "reviewerIdentity": REVIEW_EXECUTION,
+    })
 
 
 def main() -> int:
@@ -67,7 +93,7 @@ def main() -> int:
     scene_path = output / "scene.json"
     receipts = write_receipts(output)
 
-    scene = scene_api.new_scene("synthetic-sample-office", 2.95, 0.0, AUTHOR)
+    scene = scene_api.new_scene("synthetic-sample-office", 2.95, 0.0, AUTHOR, AUTHOR_EXECUTION)
     level = scene_api.default_level_id(scene)
 
     def wall(wall_id, start, end, thickness=0.12, kind="solid", color=None, description=None):
@@ -80,6 +106,7 @@ def main() -> int:
             "id": wall_id, "start": start, "end": end, "height": 2.95,
             "thickness": thickness, "kind": kind, "level": level,
             "material": material or None,
+            "execution": AUTHOR_EXECUTION,
         }, AUTHOR)["id"]
 
     # Exterior shell: shared corners -> mitered joints.
@@ -93,7 +120,10 @@ def main() -> int:
     wall("wall_meeting_glass", [8.5, 4.6], [13, 4.6], 0.045, kind="glass", description="glass partition with roller blind")
 
     def opening(kind, node_id, host, offset, width, height, sill=None, description=None):
-        payload = {"id": node_id, "wall": host, "offset": offset, "width": width, "height": height}
+        payload = {
+            "id": node_id, "wall": host, "offset": offset, "width": width,
+            "height": height, "execution": AUTHOR_EXECUTION,
+        }
         if sill is not None:
             payload["sill"] = sill
         if description:
@@ -110,18 +140,20 @@ def main() -> int:
     scene_api.op_add_polygon_node(scene, "slab", {
         "id": "slab_floor", "polygon": footprint, "thickness": 0.06, "elevation": 0.0,
         "level": level, "material": {"color": "#5b6260"},
+        "execution": AUTHOR_EXECUTION,
     }, AUTHOR)
     scene_api.op_add_polygon_node(scene, "ceiling", {
         "id": "ceiling_main", "polygon": footprint, "elevation": 2.88,
         "level": level, "material": {"color": "#e9e6dc", "opacity": 0.9},
+        "execution": AUTHOR_EXECUTION,
     }, AUTHOR)
     scene_api.op_add_polygon_node(scene, "zone", {
         "id": "zone_meeting", "polygon": [[8.56, 4.66], [12.9, 4.66], [12.9, 7.9], [8.56, 7.9]],
-        "name": "Meeting room", "level": level,
+        "name": "Meeting room", "level": level, "execution": AUTHOR_EXECUTION,
     }, AUTHOR)
     scene_api.op_add_polygon_node(scene, "zone", {
         "id": "zone_open_office", "polygon": [[0.1, 0.1], [8.44, 0.1], [8.44, 7.9], [0.1, 7.9]],
-        "name": "Open office", "level": level,
+        "name": "Open office", "level": level, "execution": AUTHOR_EXECUTION,
     }, AUTHOR)
 
     def item(item_id, category, center, size, yaw_deg=0.0, color="#b9b4a8", layout=None, confidence=0.9):
@@ -129,6 +161,7 @@ def main() -> int:
             "id": item_id, "category": category, "center": center, "size": size,
             "yaw": math.radians(yaw_deg), "color": color, "layout": layout,
             "confidence": confidence, "level": level,
+            "execution": AUTHOR_EXECUTION,
         }, AUTHOR)["id"]
 
     item("item_meeting_table", "meeting-table", [10.75, 6.3], [2.6, 0.75, 1.2], 0, "#8a6f4d", {"seatCount": 8})
@@ -142,6 +175,14 @@ def main() -> int:
     item("item_office_desk", "table", [10.6, 2.3], [1.8, 0.75, 0.9], 0, "#9c7f5c")
     item("item_office_cabinet", "cabinet", [12.62, 1.1], [1.4, 1.9, 0.45], 90, "#7f8a84")
 
+    scene["review"]["topology"] = {
+        "endpointToleranceM": 0.02,
+        "spaces": [
+            {"id": "zone_meeting", "boundaryNodeIds": ["wall_office", "wall_meeting_glass", "wall_east", "wall_north"]},
+            {"id": "zone_open_office", "boundaryNodeIds": ["wall_south", "wall_office", "wall_north", "wall_west"]},
+        ],
+    }
+
     # Accept everything above with synthetic receipts.
     for node_id in list(scene["nodes"]):
         if scene["nodes"][node_id]["type"] == "level":
@@ -154,22 +195,17 @@ def main() -> int:
         "id": "wall_candidate_west", "start": [0, 4.2], "end": [2.2, 4.2],
         "height": 2.95, "thickness": 0.12, "level": level,
         "material": {"description": "low return detected in slice; awaiting review"},
+        "execution": AUTHOR_EXECUTION,
     }, AUTHOR)
     scene_api.op_add_item(scene, {
         "id": "item_candidate_chair", "category": "chair", "center": [6.0, 6.5],
         "size": [0.58, 1.02, 0.58], "yaw": 0.0, "color": "#aab0b0", "level": level,
+        "execution": AUTHOR_EXECUTION,
     }, AUTHOR)
 
     scene["review"]["qualityLoops"] = [
         {"iteration": 1, "name": "合成样例几何自检", "status": "PASS", "remainingCount": 2},
     ]
-    scene["review"]["topology"] = {
-        "endpointToleranceM": 0.02,
-        "spaces": [
-            {"id": "zone_meeting", "boundaryNodeIds": ["wall_office", "wall_meeting_glass", "wall_east", "wall_north"]},
-            {"id": "zone_open_office", "boundaryNodeIds": ["wall_south", "wall_office", "wall_north", "wall_west"]},
-        ],
-    }
     scene["meta"]["source"] = {"samplePointCount": 0, "kind": "synthetic-sample"}
 
     scene_api.save_scene(scene_path, scene, AUTHOR)

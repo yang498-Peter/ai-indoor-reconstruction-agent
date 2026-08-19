@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -21,7 +22,32 @@ def load(name: str):
 
 
 api = load("scene_api")
+identity_api = load("execution_identity")
 migrate_mod = load("migrate_scene_v1_to_v2")
+
+
+def identity(actor, run_id, role, policy, reviewer_class=None):
+    value = {
+        "schemaVersion": "1.0", "actorId": actor, "runId": run_id, "role": role,
+        "provider": "scene-api-test", "model": "fixture", "policyId": policy,
+        "toolPolicyHash": identity_api.policy_digest(policy),
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "attestation": {"issuer": "scene-api-test", "enforcementMode": "application-enforced"},
+    }
+    if reviewer_class:
+        value["reviewerClass"] = reviewer_class
+    return value
+
+
+AUTHOR = identity("author-a", "11111111-1111-4111-8111-111111111111", "author", "author-v1")
+REVIEWER = identity(
+    "reviewer-b", "22222222-2222-4222-8222-222222222222",
+    "reviewer", "reviewer-readonly-v1", "regional",
+)
+SELF_REVIEWER = identity(
+    "author-a", "33333333-3333-4333-8333-333333333333",
+    "reviewer", "reviewer-readonly-v1", "regional",
+)
 
 
 class SceneApiTest(unittest.TestCase):
@@ -29,7 +55,7 @@ class SceneApiTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.scene_path = self.root / "scene.json"
-        self.scene = api.new_scene("test-dataset", 3.0, 0.0, "author-a")
+        self.scene = api.new_scene("test-dataset", 3.0, 0.0, "author-a", AUTHOR)
         self.level = api.default_level_id(self.scene)
 
     def tearDown(self) -> None:
@@ -38,12 +64,12 @@ class SceneApiTest(unittest.TestCase):
     def make_wall(self, wall_id="wall_test01", start=(0, 0), end=(6, 0)):
         return api.op_create_wall(self.scene, {
             "id": wall_id, "start": list(start), "end": list(end),
-            "height": 3.0, "thickness": 0.12, "level": self.level,
+            "height": 3.0, "thickness": 0.12, "level": self.level, "execution": AUTHOR,
         }, "author-a")
 
-    def make_evidence_file(self, name="receipt.json") -> str:
+    def make_evidence_file(self, name="receipt.json", kind="test") -> str:
         path = self.root / name
-        path.write_text(json.dumps({"kind": "test"}), encoding="utf-8")
+        path.write_text(json.dumps({"kind": kind}), encoding="utf-8")
         return name
 
     def test_summary_excludes_level_container_from_evidence_statuses(self):
@@ -56,23 +82,23 @@ class SceneApiTest(unittest.TestCase):
         self.assertEqual(summary["evidenceStatuses"], {"candidate": 1})
 
     def test_issue_transition_requires_independent_hash_bound_receipt(self):
-        self.scene["review"]["issues"].append({
-            "id": "I-test", "status": "OPEN", "severity": "P1",
-            "summary": "needs reconciliation", "openedBy": "author-a",
+        api.op_open_issue(self.scene, {
+            "id": "I-test", "severity": "P1", "kind": "reconciliation",
+            "summary": "needs reconciliation", "openedBy": "author-a", "execution": AUTHOR,
         })
         receipt = self.make_evidence_file("issue-receipt.json")
 
         with self.assertRaises(api.SceneError) as ctx:
             api.op_transition_issue(self.scene, self.scene_path, {
                 "id": "I-test", "expectedStatus": "OPEN", "status": "RESOLVED",
-                "reviewer": "author-a", "reason": "self review", "receiptPath": receipt,
+                "reviewerIdentity": SELF_REVIEWER, "reason": "self review", "receiptPath": receipt,
             })
         self.assertIn("SELF_REVIEW_FORBIDDEN", str(ctx.exception))
         self.assertEqual(self.scene["review"]["issues"][0]["status"], "OPEN")
 
         result = api.op_transition_issue(self.scene, self.scene_path, {
             "id": "I-test", "expectedStatus": "OPEN", "status": "RESOLVED",
-            "reviewer": "independent-reviewer", "reason": "receipt reconciles every named family",
+            "reviewerIdentity": REVIEWER, "reason": "receipt reconciles every named family",
             "receiptPath": receipt,
         })
         self.assertEqual(result["status"], "RESOLVED")
@@ -82,19 +108,20 @@ class SceneApiTest(unittest.TestCase):
     def test_open_issue_refuses_duplicate_or_missing_target(self):
         result = api.op_open_issue(self.scene, {
             "id": "I-withheld", "severity": "P2", "kind": "withheld-scope",
-            "summary": "unobserved member remains withheld", "openedBy": "author-a",
+            "summary": "unobserved member remains withheld", "openedBy": "author-a", "execution": AUTHOR,
         })
         self.assertEqual(result["status"], "OPEN")
         with self.assertRaises(api.SceneError) as ctx:
             api.op_open_issue(self.scene, {
                 "id": "I-withheld", "severity": "P2", "kind": "withheld-scope",
-                "summary": "duplicate", "openedBy": "author-a",
+                "summary": "duplicate", "openedBy": "author-a", "execution": AUTHOR,
             })
         self.assertIn("ISSUE_EXISTS", str(ctx.exception))
         with self.assertRaises(api.SceneError) as ctx:
             api.op_open_issue(self.scene, {
                 "id": "I-missing-target", "severity": "P1", "kind": "withheld-scope",
                 "summary": "bad target", "openedBy": "author-a", "targetNodeIds": ["item_missing"],
+                "execution": AUTHOR,
             })
         self.assertIn("ISSUE_TARGET_MISSING", str(ctx.exception))
 
@@ -155,15 +182,16 @@ class SceneApiTest(unittest.TestCase):
         self.make_wall()
         with self.assertRaises(api.SceneError) as ctx:
             api.op_accept(self.scene, self.scene_path, {
-                "id": "wall_test01", "mode": "measured", "reviewer": "reviewer-b",
+                "id": "wall_test01", "mode": "measured", "reviewerIdentity": REVIEWER,
             })
         self.assertIn("MEASURED_NEEDS_VERIFIED_SOURCE", str(ctx.exception))
         receipt = self.make_evidence_file()
         api.op_attach_evidence(self.scene, self.scene_path, {
             "id": "wall_test01", "type": "high-structure-slice", "path": receipt,
+            "producer": "scene-api-test",
         })
         entry = api.op_accept(self.scene, self.scene_path, {
-            "id": "wall_test01", "mode": "measured", "reviewer": "reviewer-b",
+            "id": "wall_test01", "mode": "measured", "reviewerIdentity": REVIEWER,
         })
         self.assertEqual(entry["status"], "accepted-measured")
 
@@ -172,11 +200,12 @@ class SceneApiTest(unittest.TestCase):
         receipt = self.make_evidence_file()
         api.op_attach_evidence(self.scene, self.scene_path, {
             "id": "wall_test01", "type": "elevation", "path": receipt,
+            "producer": "scene-api-test",
         })
         (self.root / receipt).write_text(json.dumps({"kind": "tampered"}), encoding="utf-8")
         with self.assertRaises(api.SceneError) as ctx:
             api.op_accept(self.scene, self.scene_path, {
-                "id": "wall_test01", "mode": "measured", "reviewer": "reviewer-b",
+                "id": "wall_test01", "mode": "measured", "reviewerIdentity": REVIEWER,
             })
         self.assertIn("EVIDENCE_HASH_STALE", str(ctx.exception))
 
@@ -185,10 +214,11 @@ class SceneApiTest(unittest.TestCase):
         receipt = self.make_evidence_file()
         api.op_attach_evidence(self.scene, self.scene_path, {
             "id": "wall_test01", "type": "elevation", "path": receipt,
+            "producer": "scene-api-test",
         })
         with self.assertRaises(api.SceneError) as ctx:
             api.op_accept(self.scene, self.scene_path, {
-                "id": "wall_test01", "mode": "measured", "reviewer": "author-a",
+                "id": "wall_test01", "mode": "measured", "reviewerIdentity": SELF_REVIEWER,
             })
         self.assertIn("SELF_REVIEW_FORBIDDEN", str(ctx.exception))
 
@@ -199,13 +229,17 @@ class SceneApiTest(unittest.TestCase):
         })
         with self.assertRaises(api.SceneError):
             api.op_accept(self.scene, self.scene_path, {
-                "id": "wall_test01", "mode": "inferred", "reviewer": "reviewer-b", "reason": "mirror of east wing",
+                "id": "wall_test01", "mode": "inferred", "reviewerIdentity": REVIEWER, "reason": "mirror of east wing",
             })
-        api.op_attach_evidence(self.scene, self.scene_path, {
-            "id": "wall_test01", "type": "inference-basis", "note": "repeated module", "allow_missing": True,
-        })
+        elevation = self.make_evidence_file("inferred-elevation.json", "elevation")
+        photo = self.make_evidence_file("inferred-photo.json", "photo")
+        for evidence_type, path in (("elevation", elevation), ("photo", photo)):
+            api.op_attach_evidence(self.scene, self.scene_path, {
+                "id": "wall_test01", "type": evidence_type, "path": path,
+                "producer": "scene-api-test",
+            })
         entry = api.op_accept(self.scene, self.scene_path, {
-            "id": "wall_test01", "mode": "inferred", "reviewer": "reviewer-b", "reason": "mirror of east wing",
+            "id": "wall_test01", "mode": "inferred", "reviewerIdentity": REVIEWER, "reason": "mirror of east wing",
         })
         self.assertEqual(entry["status"], "accepted-inferred")
 
@@ -214,9 +248,10 @@ class SceneApiTest(unittest.TestCase):
         receipt = self.make_evidence_file()
         api.op_attach_evidence(self.scene, self.scene_path, {
             "id": "wall_test01", "type": "elevation", "path": receipt,
+            "producer": "scene-api-test",
         })
         api.op_accept(self.scene, self.scene_path, {
-            "id": "wall_test01", "mode": "measured", "reviewer": "reviewer-b",
+            "id": "wall_test01", "mode": "measured", "reviewerIdentity": REVIEWER,
         })
         api.op_update_node(self.scene, {"id": "wall_test01", "updates": {"height": 2.8}})
         self.assertEqual(self.scene["evidence"]["wall_test01"]["status"], "candidate")
@@ -322,9 +357,11 @@ class MigrationTest(unittest.TestCase):
         slab = scene["nodes"]["slab_floor1"]
         self.assertIn([8.0, 6.0], slab["polygon"])
         self.assertEqual(scene["evidence"]["wall_cand1"]["status"], "candidate")
-        self.assertEqual(scene["evidence"]["item_table5"]["status"], "accepted-measured")
+        self.assertEqual(scene["evidence"]["item_table5"]["status"], "candidate")
+        self.assertEqual(scene["evidence"]["item_table5"]["legacyDisposition"], "accepted-measured")
         wall_entry = scene["evidence"]["wall_wall17"]
-        self.assertEqual(wall_entry["status"], "accepted-measured")
+        self.assertEqual(wall_entry["status"], "candidate")
+        self.assertEqual(wall_entry["legacyDisposition"], "accepted-measured")
         self.assertTrue(wall_entry["sources"])
 
 

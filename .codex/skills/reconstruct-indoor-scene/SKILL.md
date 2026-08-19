@@ -106,7 +106,7 @@ For every elongated table or workbench, create a raw-data `furnitureValidation` 
 
 Author productized furniture as one logical family transaction: tabletop, supports, screens, cabinets and chairs either validate and commit together or roll back together. Store a stable `logicalFurnitureId`; support parts with `supportsTopId` inherit the supported tabletop's logical family for counts and review. Component count is not furniture completeness.
 
-Every provisional element must end as either `accepted-measured`, `accepted-inferred`, or `rejected`. A finished scene has zero visible or hidden unresolved candidates.
+Every provisional element must end as either `accepted-measured`, `accepted-inferred`, or `rejected`. Acceptance is valid only when the current geometry/topology claim hash, evidence-set digest and structured independent reviewer execution remain current. A finished scene has zero visible or hidden unresolved candidates.
 
 ## Run the visual correction loop
 
@@ -119,7 +119,7 @@ For every iteration, open one concrete issue in `pipeline-state.json` and work i
 3. Check position, direction, endpoints, dimensions, height bands, material, openings, occlusion completion, collision, regularity, and omissions.
 4. Write corrections into the human resolution ledger; never let an algorithm silently move accepted geometry.
 5. Run `reconstruction_loop.py patch` immediately after the semantic scene parses. It stores a last-known-good hash-addressed checkpoint and invalidates presentation, regional, global, and publish stages through the contract DAG. A presentation-only change uses `invalidate --change presentation` and must not invalidate evidence or authority stages.
-6. Run `reconstruction_loop.py review` with a new render plus independent raw/overlay/elevation/photo evidence. Every issue requires a reviewer other than the patch author; P0/P1 uses an independent regional or adversarial reviewer.
+6. Run `reconstruction_loop.py review` with a new render plus independent raw/overlay/elevation/photo evidence and a checked-in read-only reviewer policy. Actor ID and execution run ID must both differ from the author; P0/P1 uses an independent regional or adversarial reviewer.
 7. Invalidate old screenshots and scores whenever scene geometry changes. Two non-improving attempts trigger a mandatory strategy change before another patch.
 8. Repeat failed regions before scoring the whole scene.
 
@@ -157,7 +157,7 @@ Pass only when all are true:
 - no P0 or P1 visual findings;
 - every declared room closes and publishes all boundary elements;
 - repeated partitions differ by at most 2 degrees unless evidence records an exception;
-- measured plan offsets are at most 0.08 m; larger or unmeasured completions must be `accepted-inferred`, retain an explicit reason, and link at least two distinct verified evidence files;
+- measured plan offsets are at most 0.08 m; larger or unmeasured completions must be `accepted-inferred`, retain an explicit reason, and link at least two verified evidence files with distinct content hashes and disjoint root lineages;
 - every reviewed region scores at least 85 and total score is at least 90;
 - the review receipt hash matches the current scene;
 - the V2 evidence ledger has no unresolved non-level nodes, declared topology contains at least one space, and every current P0/P1 issue is resolved;

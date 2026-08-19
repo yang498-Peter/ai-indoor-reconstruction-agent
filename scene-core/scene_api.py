@@ -8,8 +8,10 @@ revision -> write. A failed validation leaves the file untouched.
 Acceptance is fail-closed:
 - accept --mode measured requires at least one evidence source whose file
   exists next to the scene and whose sha256 matches the ledger.
-- accept --mode inferred requires a reason plus at least two distinct sources.
-- The reviewer must differ from the actor that created the node.
+- accept --mode inferred requires a reason plus at least two verified files
+  with distinct content hashes and root lineages.
+- Acceptance requires an independent read-only reviewer execution and stores a
+  claimHash that becomes stale when geometry, topology or a host changes.
 
 Coordinates are SOURCE plan meters (x, y), Z-up. Display mapping is owned by
 scene-core.js and never leaks into this file.
@@ -27,6 +29,12 @@ import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+
+CORE_DIR = Path(__file__).resolve().parent
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+
+import execution_identity as execution_identity_api  # noqa: E402
 
 SCHEMA_VERSION = "2.0"
 REVISION_KEEP = 60
@@ -81,8 +89,12 @@ def geometry_digest(scene: dict) -> str:
             "schemaVersion": scene.get("schemaVersion"),
             "dataset": scene.get("dataset"),
             "coordinateFrame": scene.get("coordinateFrame"),
-            "nodes": scene.get("nodes", {}),
+            "nodes": {
+                node_id: _claim_node_payload(node)
+                for node_id, node in scene.get("nodes", {}).items()
+            },
             "rootNodeIds": scene.get("rootNodeIds", []),
+            "topology": scene.get("review", {}).get("topology", {}),
         }
     )
 
@@ -90,6 +102,119 @@ def geometry_digest(scene: dict) -> str:
 def evidence_set_digest(scene: dict) -> str:
     """Hash the authority evidence ledger independently from geometry bytes."""
     return _canonical_digest(scene.get("evidence", {}))
+
+
+def _identity(value: object) -> dict:
+    try:
+        return execution_identity_api.normalize_identity(value)
+    except execution_identity_api.IdentityError as error:
+        raise SceneError(str(error)) from error
+
+
+def _require_operation(value: object, operation: str, roles: set[str] | None = None) -> dict:
+    try:
+        return execution_identity_api.require_operation(value, operation, roles)
+    except execution_identity_api.IdentityError as error:
+        raise SceneError(str(error)) from error
+
+
+def _register_execution(scene: dict, identity: object) -> dict:
+    normalized = _identity(identity)
+    executions = scene.setdefault("meta", {}).setdefault("executions", {})
+    existing = executions.get(normalized["runId"])
+    if existing is not None and execution_identity_api.identity_digest(existing) != execution_identity_api.identity_digest(normalized):
+        raise SceneError(f"EXECUTION_RUN_ROLE_CONFLICT:{normalized['runId']}")
+    executions[normalized["runId"]] = normalized
+    return normalized
+
+
+def _author_identity(scene: dict, node: dict) -> dict:
+    run_id = node.get("meta", {}).get("createdRunId")
+    identity = scene.get("meta", {}).get("executions", {}).get(run_id)
+    if not run_id or not isinstance(identity, dict):
+        raise SceneError(f"AUTHOR_EXECUTION_IDENTITY_REQUIRED:{node.get('id')}")
+    return _identity(identity)
+
+
+def _claim_node_payload(node: dict) -> dict:
+    return {key: value for key, value in node.items() if key != "meta"}
+
+
+def claim_payload(scene: dict, node_id: str) -> dict:
+    nodes = scene.get("nodes", {})
+    node = nodes.get(node_id)
+    if not isinstance(node, dict):
+        raise SceneError(f"NODE_MISSING:{node_id}")
+    dependencies: list[dict] = []
+    parent_id = node.get("parentId")
+    seen: set[str] = set()
+    while parent_id and parent_id not in seen:
+        seen.add(parent_id)
+        parent = nodes.get(parent_id)
+        if not isinstance(parent, dict):
+            break
+        parent_payload = _claim_node_payload(parent)
+        parent_payload = {key: value for key, value in parent_payload.items() if key != "children"}
+        dependencies.append({"nodeId": parent_id, "claim": parent_payload})
+        parent_id = parent.get("parentId")
+    hosted_children = []
+    if node.get("type") == "wall":
+        for child_id in sorted(node.get("children", [])):
+            child = nodes.get(child_id)
+            if isinstance(child, dict) and child.get("type") in HOSTABLE_TYPES:
+                hosted_children.append({"nodeId": child_id, "claim": _claim_node_payload(child)})
+    spaces = [
+        space
+        for space in scene.get("review", {}).get("topology", {}).get("spaces", [])
+        if node_id in space.get("boundaryNodeIds", [])
+    ]
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "coordinateFrame": scene.get("coordinateFrame"),
+        "nodeId": node_id,
+        "nodeClaim": _claim_node_payload(node),
+        "dependencyClaims": dependencies,
+        "hostedChildrenClaims": hosted_children,
+        "topologyClaims": spaces,
+    }
+
+
+def claim_hash(scene: dict, node_id: str) -> str:
+    return _canonical_digest(claim_payload(scene, node_id))
+
+
+def _accepted_source_digest(sources: list[dict]) -> str:
+    normalized = [
+        {
+            "sourceRole": source.get("sourceRole") or source.get("type"),
+            "contentSha256": source.get("contentSha256"),
+            "lineageId": source.get("lineageId"),
+            "rootContentSha256s": sorted(source.get("rootContentSha256s", [])),
+            "producer": source.get("producer"),
+        }
+        for source in sources
+    ]
+    return _canonical_digest(normalized)
+
+
+def has_two_independent_sources(sources: list[dict]) -> bool:
+    verified = [
+        source
+        for source in sources
+        if source.get("contentSha256")
+        and source.get("lineageId")
+        and source.get("rootContentSha256s")
+    ]
+    for index, first in enumerate(verified):
+        first_roots = set(first["rootContentSha256s"])
+        for second in verified[index + 1:]:
+            if (
+                first.get("contentSha256") != second.get("contentSha256")
+                and first.get("lineageId") != second.get("lineageId")
+                and first_roots.isdisjoint(set(second["rootContentSha256s"]))
+            ):
+                return True
+    return False
 
 
 def load_scene(path: Path) -> dict:
@@ -241,11 +366,34 @@ def validate_scene(scene: dict) -> list[str]:
         if node_id not in nodes:
             problems.append(f"EVIDENCE_ORPHAN:{node_id}")
         status = entry.get("status")
+        if status in {"accepted-measured", "accepted-inferred"}:
+            sources = entry.get("sources", [])
+            current_claim = claim_payload(scene, node_id)
+            if entry.get("claimSnapshot") != current_claim:
+                problems.append(f"EVIDENCE_CLAIM_SNAPSHOT_STALE:{node_id}")
+            if entry.get("claimHash") != _canonical_digest(current_claim):
+                problems.append(f"EVIDENCE_CLAIM_STALE:{node_id}")
+            if entry.get("acceptedSourceDigest") != _accepted_source_digest(sources):
+                problems.append(f"ACCEPTED_SOURCE_DIGEST_STALE:{node_id}")
+            try:
+                _identity(entry.get("reviewer"))
+            except SceneError:
+                problems.append(f"REVIEW_IDENTITY_INVALID:{node_id}")
         if status == "accepted-measured" and not entry.get("sources"):
             problems.append(f"MEASURED_WITHOUT_SOURCES:{node_id}")
         if status == "accepted-inferred":
-            if len(entry.get("sources", [])) < 2:
-                problems.append(f"INFERRED_NEEDS_TWO_SOURCES:{node_id}")
+            lineages = {
+                source.get("lineageId")
+                for source in entry.get("sources", [])
+                if source.get("contentSha256")
+            }
+            contents = {
+                source.get("contentSha256")
+                for source in entry.get("sources", [])
+                if source.get("contentSha256")
+            }
+            if len(lineages) < 2 or len(contents) < 2 or not has_two_independent_sources(entry.get("sources", [])):
+                problems.append(f"INFERRED_NEEDS_TWO_DISTINCT_SOURCES:{node_id}")
             if not entry.get("reason"):
                 problems.append(f"INFERRED_WITHOUT_REASON:{node_id}")
         if status == "rejected" and not entry.get("reason"):
@@ -260,9 +408,15 @@ def validate_scene(scene: dict) -> list[str]:
 # Mutations
 # ---------------------------------------------------------------------------
 
-def new_scene(dataset: str, level_height: float, level_elevation: float, actor: str) -> dict:
+def new_scene(
+    dataset: str,
+    level_height: float,
+    level_elevation: float,
+    actor: str,
+    execution: dict | None = None,
+) -> dict:
     level_id = new_node_id("level")
-    return {
+    scene = {
         "schemaVersion": SCHEMA_VERSION,
         "dataset": dataset,
         "coordinateFrame": {
@@ -280,9 +434,23 @@ def new_scene(dataset: str, level_height: float, level_elevation: float, actor: 
         "rootNodeIds": [level_id],
         "evidence": {},
         "review": {"issues": [], "qualityLoops": [], "topology": {"endpointToleranceM": 0.02, "spaces": []}},
-        "meta": {"source": {"samplePointCount": 0}, "pipeline": [], "photos": [], "cameraPath": []},
+        "meta": {
+            "source": {"samplePointCount": 0}, "pipeline": [], "photos": [],
+            "cameraPath": [], "executions": {},
+        },
         "revision": {"counter": 0},
     }
+    if execution is not None:
+        normalized = _register_execution(scene, execution)
+        if normalized["actorId"] != strict_actor_key(actor):
+            raise SceneError("EXECUTION_ACTOR_MISMATCH:init")
+        scene["nodes"][level_id]["meta"].update(
+            {
+                "createdRunId": normalized["runId"],
+                "createdIdentityDigest": execution_identity_api.identity_digest(normalized),
+            }
+        )
+    return scene
 
 
 def default_level_id(scene: dict) -> str:
@@ -292,11 +460,60 @@ def default_level_id(scene: dict) -> str:
     raise SceneError("NO_LEVEL:scene has no level root")
 
 
-def insert_node(scene: dict, node: dict, actor: str) -> dict:
+def _dependent_node_ids(scene: dict, changed_ids: set[str]) -> set[str]:
+    nodes = scene.get("nodes", {})
+    affected = set(changed_ids)
+    queue = list(changed_ids)
+    while queue:
+        current_id = queue.pop()
+        node = nodes.get(current_id, {})
+        for child_id in node.get("children", []):
+            if child_id not in affected:
+                affected.add(child_id)
+                queue.append(child_id)
+        if node.get("type") in HOSTABLE_TYPES:
+            parent_id = node.get("parentId")
+            if parent_id and parent_id not in affected:
+                affected.add(parent_id)
+    return affected
+
+
+def _invalidate_nodes(
+    scene: dict,
+    changed_ids: set[str],
+    reason: str,
+    *,
+    cascade: bool = True,
+) -> list[str]:
+    invalidated = []
+    affected = _dependent_node_ids(scene, changed_ids) if cascade else changed_ids
+    for node_id in sorted(affected):
+        entry = scene.get("evidence", {}).get(node_id)
+        if not isinstance(entry, dict) or entry.get("status") == "candidate":
+            continue
+        entry["status"] = "candidate"
+        entry["reason"] = f"{reason} at {now_iso()}; previous disposition invalidated"
+        entry.pop("claimHash", None)
+        entry.pop("claimSnapshot", None)
+        entry.pop("acceptedSourceDigest", None)
+        entry.pop("reviewer", None)
+        entry.pop("acceptedAt", None)
+        invalidated.append(node_id)
+    return invalidated
+
+
+def insert_node(scene: dict, node: dict, actor: str, execution: dict | None = None) -> dict:
     node.setdefault("children", [])
     meta = node.setdefault("meta", {})
     meta.setdefault("createdBy", actor)
     meta.setdefault("createdAt", now_iso())
+    if execution is not None:
+        normalized = _require_operation(execution, "scene:mutate", {"author"})
+        if normalized["actorId"] != strict_actor_key(actor):
+            raise SceneError("EXECUTION_ACTOR_MISMATCH:insert-node")
+        _register_execution(scene, normalized)
+        meta["createdRunId"] = normalized["runId"]
+        meta["createdIdentityDigest"] = execution_identity_api.identity_digest(normalized)
     scene["nodes"][node["id"]] = node
     parent_id = node.get("parentId")
     if parent_id is not None:
@@ -304,6 +521,12 @@ def insert_node(scene: dict, node: dict, actor: str) -> dict:
         if parent is None:
             raise SceneError(f"PARENT_MISSING:{parent_id}")
         parent.setdefault("children", []).append(node["id"])
+        _invalidate_nodes(
+            scene,
+            {parent_id},
+            "child geometry changed",
+            cascade=parent.get("type") == "wall",
+        )
     scene.setdefault("evidence", {})[node["id"]] = {"status": "candidate", "sources": []}
     return node
 
@@ -321,7 +544,7 @@ def op_create_wall(scene: dict, args: dict, actor: str) -> dict:
     }
     if args.get("material"):
         node["material"] = args["material"]
-    return insert_node(scene, node, actor)
+    return insert_node(scene, node, actor, args.get("execution"))
 
 
 def op_add_opening(scene: dict, node_type: str, args: dict, actor: str) -> dict:
@@ -340,7 +563,7 @@ def op_add_opening(scene: dict, node_type: str, args: dict, actor: str) -> dict:
     }
     if args.get("material"):
         node["material"] = args["material"]
-    return insert_node(scene, node, actor)
+    return insert_node(scene, node, actor, args.get("execution"))
 
 
 def op_add_item(scene: dict, args: dict, actor: str) -> dict:
@@ -358,7 +581,7 @@ def op_add_item(scene: dict, args: dict, actor: str) -> dict:
         node["layout"] = args["layout"]
     if args.get("confidence") is not None:
         node["confidence"] = float(args["confidence"])
-    return insert_node(scene, node, actor)
+    return insert_node(scene, node, actor, args.get("execution"))
 
 
 def op_add_polygon_node(scene: dict, node_type: str, args: dict, actor: str) -> dict:
@@ -376,7 +599,7 @@ def op_add_polygon_node(scene: dict, node_type: str, args: dict, actor: str) -> 
         node["name"] = args["name"]
     if args.get("material"):
         node["material"] = args["material"]
-    return insert_node(scene, node, actor)
+    return insert_node(scene, node, actor, args.get("execution"))
 
 
 def op_add_column(scene: dict, args: dict, actor: str) -> dict:
@@ -389,7 +612,7 @@ def op_add_column(scene: dict, args: dict, actor: str) -> dict:
         "height": float(args.get("height", 3.05)),
         "baseHeight": float(args.get("baseHeight", 0.0)),
     }
-    return insert_node(scene, node, actor)
+    return insert_node(scene, node, actor, args.get("execution"))
 
 
 def set_dotted(target: dict, dotted_key: str, value) -> None:
@@ -404,14 +627,13 @@ def op_update_node(scene: dict, args: dict) -> dict:
     if node is None:
         raise SceneError(f"NODE_MISSING:{args['id']}")
     protected = {"id", "type", "parentId", "children"}
+    protected_meta = {"meta.createdBy", "meta.createdAt", "meta.createdRunId", "meta.createdIdentityDigest"}
     for dotted_key, value in args["updates"].items():
-        if dotted_key.split(".")[0] in protected:
+        if dotted_key.split(".")[0] in protected or dotted_key in protected_meta:
             raise SceneError(f"PROTECTED_FIELD:{dotted_key} (use dedicated commands for re-parenting)")
         set_dotted(node, dotted_key, value)
-    entry = scene.get("evidence", {}).get(args["id"])
-    if entry and entry.get("status", "").startswith("accepted"):
-        entry["status"] = "candidate"
-        entry["reason"] = f"geometry changed at {now_iso()}; previous acceptance invalidated"
+    if any(not dotted_key.startswith("meta.") for dotted_key in args["updates"]):
+        _invalidate_nodes(scene, {args["id"]}, "authority claim changed")
     return node
 
 
@@ -431,6 +653,12 @@ def op_delete_node(scene: dict, node_id: str) -> list[str]:
 
     parent_id = scene["nodes"][node_id].get("parentId")
     if parent_id and parent_id in scene["nodes"]:
+        _invalidate_nodes(
+            scene,
+            {parent_id},
+            "child geometry deleted",
+            cascade=scene["nodes"][parent_id].get("type") == "wall",
+        )
         parent_children = scene["nodes"][parent_id].get("children", [])
         if node_id in parent_children:
             parent_children.remove(node_id)
@@ -452,16 +680,57 @@ def op_attach_evidence(scene: dict, scene_path: Path, args: dict) -> dict:
     if node_id not in scene["nodes"]:
         raise SceneError(f"NODE_MISSING:{node_id}")
     entry = scene.setdefault("evidence", {}).setdefault(node_id, {"status": "candidate", "sources": []})
-    source = {"type": args["type"]}
+    source_role = str(args.get("sourceRole") or args["type"])
+    source = {"type": args["type"], "sourceRole": source_role}
     if args.get("path"):
         source["path"] = args["path"]
         evidence_file = resolve_evidence_file(scene_path, args["path"])
         if evidence_file.is_file():
-            source["sha256"] = hashlib.sha256(evidence_file.read_bytes()).hexdigest()
+            content_digest = hashlib.sha256(evidence_file.read_bytes()).hexdigest()
+            source["sha256"] = content_digest
+            source["contentSha256"] = content_digest
+            receipt_path = args.get("provenanceReceipt")
+            if receipt_path:
+                receipt_file = resolve_evidence_file(scene_path, receipt_path)
+                if not receipt_file.is_file():
+                    raise SceneError(f"PROVENANCE_RECEIPT_MISSING:{receipt_path}")
+                try:
+                    receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise SceneError(f"PROVENANCE_RECEIPT_INVALID:{receipt_path}") from error
+                roots = receipt.get("rootContentSha256s")
+                if (
+                    receipt.get("outputContentSha256") != content_digest
+                    or not isinstance(roots, list)
+                    or not roots
+                    or any(re.fullmatch(r"[0-9a-f]{64}", str(value)) is None for value in roots)
+                ):
+                    raise SceneError(f"PROVENANCE_RECEIPT_INVALID:{receipt_path}")
+                source["rootContentSha256s"] = sorted(set(roots))
+                source["provenanceReceipt"] = {
+                    "path": receipt_path,
+                    "sha256": hashlib.sha256(receipt_file.read_bytes()).hexdigest(),
+                }
+                source["producer"] = receipt.get("producer") or args.get("producer")
+            else:
+                source["rootContentSha256s"] = [content_digest]
+                source["producer"] = args.get("producer")
+            if not source.get("producer"):
+                raise SceneError(f"EVIDENCE_PRODUCER_REQUIRED:{args['path']}")
+            source["lineageId"] = _canonical_digest(
+                {"rootContentSha256s": source["rootContentSha256s"]}
+            )
+            supplied_lineage = args.get("lineageId")
+            if supplied_lineage and supplied_lineage != source["lineageId"]:
+                raise SceneError("EVIDENCE_LINEAGE_CALLER_OVERRIDE_FORBIDDEN")
         elif not args.get("allow_missing"):
             raise SceneError(f"EVIDENCE_FILE_MISSING:{args['path']} (relative to the scene directory)")
+    elif args.get("allow_missing") and args.get("type") != "inference-basis":
+        raise SceneError("MISSING_EVIDENCE_ONLY_ALLOWED_FOR_INFERENCE_BASIS")
     if args.get("note"):
         source["note"] = args["note"]
+    if entry.get("status") != "candidate":
+        _invalidate_nodes(scene, {node_id}, "evidence set changed")
     entry.setdefault("sources", []).append(source)
     return entry
 
@@ -472,12 +741,19 @@ def op_accept(scene: dict, scene_path: Path, args: dict) -> dict:
     if node is None:
         raise SceneError(f"NODE_MISSING:{node_id}")
     entry = scene.setdefault("evidence", {}).setdefault(node_id, {"status": "candidate", "sources": []})
-    reviewer = args["reviewer"]
-    author = node.get("meta", {}).get("createdBy")
-    if author and reviewer == author and not args.get("allow_self"):
-        raise SceneError(f"SELF_REVIEW_FORBIDDEN:{node_id} author={author}. An acceptance needs an independent reviewer.")
-
+    author_identity = _author_identity(scene, node)
     sources = entry.get("sources", [])
+    try:
+        reviewer = execution_identity_api.require_independent_reviewer(
+            author_identity,
+            args.get("reviewerIdentity"),
+            severity=args.get("severity"),
+            required_input_digests={claim_hash(scene, node_id), _accepted_source_digest(sources)},
+        )
+    except execution_identity_api.IdentityError as error:
+        raise SceneError(str(error)) from error
+    _register_execution(scene, reviewer)
+
     mode = args["mode"]
     if mode == "measured":
         verified = 0
@@ -491,15 +767,34 @@ def op_accept(scene: dict, scene_path: Path, args: dict) -> dict:
             if not evidence_file.is_file():
                 raise SceneError(f"EVIDENCE_FILE_MISSING:{path_text} for {node_id}")
             digest = hashlib.sha256(evidence_file.read_bytes()).hexdigest()
-            if source.get("sha256") and source["sha256"] != digest:
+            if source.get("contentSha256") != digest or source.get("sha256") != digest:
                 raise SceneError(f"EVIDENCE_HASH_STALE:{path_text} for {node_id}")
+            if not source.get("lineageId") or not source.get("rootContentSha256s") or not source.get("producer"):
+                raise SceneError(f"EVIDENCE_PROVENANCE_INCOMPLETE:{path_text} for {node_id}")
             verified += 1
         if verified < 1:
             raise SceneError(f"MEASURED_NEEDS_VERIFIED_SOURCE:{node_id} has no existing measurement evidence file")
         entry["status"] = "accepted-measured"
     elif mode == "inferred":
-        if len(sources) < 2:
-            raise SceneError(f"INFERRED_NEEDS_TWO_SOURCES:{node_id} has {len(sources)}")
+        verified_sources = []
+        for source in sources:
+            path_text = source.get("path")
+            if not path_text:
+                continue
+            evidence_file = resolve_evidence_file(scene_path, path_text)
+            if not evidence_file.is_file():
+                raise SceneError(f"EVIDENCE_FILE_MISSING:{path_text} for {node_id}")
+            digest = hashlib.sha256(evidence_file.read_bytes()).hexdigest()
+            if source.get("contentSha256") != digest:
+                raise SceneError(f"EVIDENCE_HASH_STALE:{path_text} for {node_id}")
+            verified_sources.append(source)
+        lineages = {source.get("lineageId") for source in verified_sources}
+        contents = {source.get("contentSha256") for source in verified_sources}
+        if len(lineages) < 2 or len(contents) < 2 or not has_two_independent_sources(verified_sources):
+            raise SceneError(
+                f"INFERRED_NEEDS_TWO_DISTINCT_SOURCES:{node_id} has "
+                f"{len(lineages)} lineages/{len(contents)} contents"
+            )
         if not args.get("reason"):
             raise SceneError(f"INFERRED_NEEDS_REASON:{node_id}")
         entry["status"] = "accepted-inferred"
@@ -508,6 +803,9 @@ def op_accept(scene: dict, scene_path: Path, args: dict) -> dict:
         raise SceneError(f"UNKNOWN_ACCEPT_MODE:{mode}")
     entry["reviewer"] = reviewer
     entry["acceptedAt"] = now_iso()
+    entry["claimSnapshot"] = claim_payload(scene, node_id)
+    entry["claimHash"] = _canonical_digest(entry["claimSnapshot"])
+    entry["acceptedSourceDigest"] = _accepted_source_digest(sources)
     return entry
 
 
@@ -516,9 +814,24 @@ def op_reject(scene: dict, args: dict) -> dict:
     if node_id not in scene["nodes"]:
         raise SceneError(f"NODE_MISSING:{node_id}")
     entry = scene.setdefault("evidence", {}).setdefault(node_id, {"status": "candidate", "sources": []})
+    node = scene["nodes"][node_id]
+    author_identity = _author_identity(scene, node)
+    sources = entry.get("sources", [])
+    try:
+        reviewer = execution_identity_api.require_independent_reviewer(
+            author_identity,
+            args.get("reviewerIdentity"),
+            severity=args.get("severity"),
+            required_input_digests={claim_hash(scene, node_id), _accepted_source_digest(sources)},
+        )
+    except execution_identity_api.IdentityError as error:
+        raise SceneError(str(error)) from error
+    _register_execution(scene, reviewer)
     entry["status"] = "rejected"
-    entry["reviewer"] = args["reviewer"]
+    entry["reviewer"] = reviewer
     entry["reason"] = args["reason"]
+    entry["claimSnapshot"] = claim_payload(scene, node_id)
+    entry["claimHash"] = _canonical_digest(entry["claimSnapshot"])
     return entry
 
 
@@ -543,14 +856,19 @@ def op_open_issue(scene: dict, args: dict) -> dict:
     kind = str(args.get("kind") or "").strip()
     if not summary or not kind:
         raise SceneError(f"ISSUE_FIELDS_REQUIRED:{issue_id}")
-    opened_by = strict_actor_key(str(args.get("openedBy") or ""))
+    execution = _require_operation(args.get("execution"), "pipeline:open-issue", {"author"})
+    _register_execution(scene, execution)
+    opened_by = strict_actor_key(str(args.get("openedBy") or execution["actorId"]))
+    if opened_by != execution["actorId"]:
+        raise SceneError("EXECUTION_ACTOR_MISMATCH:open-issue")
     targets = list(args.get("targetNodeIds") or [])
     missing = [node_id for node_id in targets if node_id not in scene.get("nodes", {})]
     if missing:
         raise SceneError(f"ISSUE_TARGET_MISSING:{issue_id}:{','.join(missing)}")
     issue = {
         "id": issue_id, "status": "OPEN", "severity": severity, "kind": kind,
-        "summary": summary, "openedBy": opened_by, "targetNodeIds": targets,
+        "summary": summary, "openedBy": opened_by, "openedByRunId": execution["runId"],
+        "targetNodeIds": targets,
         "openedAt": now_iso(),
     }
     if args.get("area"):
@@ -572,10 +890,10 @@ def op_transition_issue(scene: dict, scene_path: Path, args: dict) -> dict:
     reason = str(args.get("reason") or "").strip()
     if not reason:
         raise SceneError(f"ISSUE_REASON_REQUIRED:{args['id']}")
-    reviewer = strict_actor_key(str(args.get("reviewer") or ""))
-    opened_by = strict_actor_key(str(issue.get("openedBy") or "unknown"))
-    if reviewer == opened_by:
-        raise SceneError(f"SELF_REVIEW_FORBIDDEN:{args['id']} openedBy={issue.get('openedBy')}")
+    author_run_id = issue.get("openedByRunId")
+    author_identity = scene.get("meta", {}).get("executions", {}).get(author_run_id)
+    if not isinstance(author_identity, dict):
+        raise SceneError(f"AUTHOR_EXECUTION_IDENTITY_REQUIRED:{args['id']}")
     receipt_path = str(args.get("receiptPath") or "").strip()
     if not receipt_path:
         raise SceneError(f"ISSUE_RECEIPT_REQUIRED:{args['id']}")
@@ -586,6 +904,16 @@ def op_transition_issue(scene: dict, scene_path: Path, args: dict) -> dict:
     supplied_digest = str(args.get("receiptSha256") or "").lower()
     if supplied_digest and supplied_digest != digest:
         raise SceneError(f"ISSUE_RECEIPT_HASH_STALE:{receipt_path}")
+    try:
+        reviewer = execution_identity_api.require_independent_reviewer(
+            author_identity,
+            args.get("reviewerIdentity"),
+            severity=issue.get("severity"),
+            required_input_digests={digest},
+        )
+    except execution_identity_api.IdentityError as error:
+        raise SceneError(str(error)) from error
+    _register_execution(scene, reviewer)
     issue["status"] = status
     issue["resolution"] = {
         "previousStatus": expected,
@@ -676,11 +1004,27 @@ def op_summary(scene: dict) -> dict:
 # Patch application (atomic batches)
 # ---------------------------------------------------------------------------
 
-def apply_ops(scene: dict, scene_path: Path, ops: list[dict], actor: str) -> list[dict]:
+def apply_ops(
+    scene: dict,
+    scene_path: Path,
+    ops: list[dict],
+    actor: str,
+    execution: dict | None = None,
+) -> list[dict]:
     results = []
     for op in ops:
         kind = op.get("op")
         payload = {k: v for k, v in op.items() if k != "op"}
+        if execution is not None:
+            if kind in {
+                "create_wall", "add_door", "add_window", "add_opening", "add_item",
+                "add_slab", "add_ceiling", "add_zone", "add_column",
+            }:
+                payload["execution"] = execution
+            elif kind in {"accept", "reject", "transition_issue"}:
+                payload["reviewerIdentity"] = execution
+            elif kind == "open_issue":
+                payload["execution"] = execution
         if kind == "create_wall":
             results.append(op_create_wall(scene, payload, actor))
         elif kind in {"add_door", "add_window", "add_opening"}:
@@ -739,7 +1083,8 @@ def emit(payload) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scene", required=True, type=Path, help="scene V2 JSON path")
-    parser.add_argument("--actor", default="agent", help="stable actor id recorded on mutations")
+    parser.add_argument("--actor", help="display actor id; must match --identity when supplied")
+    parser.add_argument("--identity", type=Path, help="execution identity JSON required for mutations")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="create a blank V2 scene")
@@ -806,26 +1151,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--id", required=True)
     p.add_argument("--type", required=True)
     p.add_argument("--path", help="evidence file relative to the scene directory")
+    p.add_argument("--source-role")
+    p.add_argument("--producer")
+    p.add_argument("--provenance-receipt")
     p.add_argument("--note")
     p.add_argument("--allow-missing", action="store_true")
 
     p = sub.add_parser("accept")
     p.add_argument("--id", required=True)
     p.add_argument("--mode", required=True, choices=["measured", "inferred"])
-    p.add_argument("--reviewer", required=True)
     p.add_argument("--reason")
-    p.add_argument("--allow-self", action="store_true")
 
     p = sub.add_parser("reject")
     p.add_argument("--id", required=True)
-    p.add_argument("--reviewer", required=True)
     p.add_argument("--reason", required=True)
 
     p = sub.add_parser("transition-issue", help="change an issue state using an independent hash-bound receipt")
     p.add_argument("--id", required=True)
     p.add_argument("--expected-status", required=True, choices=["OPEN", "PATCHED", "FAIL"])
     p.add_argument("--status", required=True, choices=["PATCHED", "RESOLVED", "FAIL"])
-    p.add_argument("--reviewer", required=True)
     p.add_argument("--reason", required=True)
     p.add_argument("--receipt-path", required=True)
     p.add_argument("--receipt-sha256")
@@ -871,10 +1215,38 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     scene_path: Path = args.scene
     try:
+        execution = None
+        if args.identity:
+            try:
+                execution = execution_identity_api.load_identity(args.identity.resolve())
+            except execution_identity_api.IdentityError as error:
+                raise SceneError(str(error)) from error
+            if args.actor and strict_actor_key(args.actor) != execution["actorId"]:
+                raise SceneError("EXECUTION_ACTOR_MISMATCH:cli")
+            args.actor = execution["actorId"]
+        elif args.command not in {"find", "measure", "validate", "summary"}:
+            raise SceneError("EXECUTION_IDENTITY_REQUIRED:use --identity <execution-identity.json>")
+        args.actor = args.actor or "query-agent"
+
+        operation_by_command = {
+            "init": "scene:create",
+            "create-wall": "scene:mutate", "add-door": "scene:mutate",
+            "add-window": "scene:mutate", "add-opening": "scene:mutate",
+            "add-item": "scene:mutate", "add-slab": "scene:mutate",
+            "add-ceiling": "scene:mutate", "add-zone": "scene:mutate",
+            "add-column": "scene:mutate", "update-node": "scene:mutate",
+            "delete-node": "scene:delete", "undo": "scene:undo",
+            "attach-evidence": "evidence:attach", "open-issue": "pipeline:open-issue",
+            "accept": "pipeline:submit-verdict", "reject": "pipeline:submit-verdict",
+            "transition-issue": "pipeline:submit-verdict", "apply-patch": "scene:mutate",
+        }
+        if args.command in operation_by_command:
+            _require_operation(execution, operation_by_command[args.command])
+
         if args.command == "init":
             if scene_path.is_file():
                 raise SceneError(f"SCENE_EXISTS:{scene_path} (refusing to overwrite; delete it first)")
-            scene = new_scene(args.dataset, args.level_height, args.level_elevation, args.actor)
+            scene = new_scene(args.dataset, args.level_height, args.level_elevation, args.actor, execution)
             save_scene(scene_path, scene, args.actor)
             emit({"ok": True, "scene": str(scene_path), "levelId": default_level_id(scene)})
             return 0
@@ -900,7 +1272,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "apply-patch":
             ops = json.loads(args.patch.read_text(encoding="utf-8"))
-            results = apply_ops(scene, scene_path, ops, args.actor)
+            forbidden = {"accept", "reject", "transition_issue"}.intersection(
+                {str(row.get("op")) for row in ops if isinstance(row, dict)}
+            )
+            if forbidden:
+                raise SceneError("REVIEW_VERDICT_BATCH_FORBIDDEN:use dedicated reviewer commands")
+            results = apply_ops(scene, scene_path, ops, args.actor, execution)
             save_scene(scene_path, scene, args.actor)
             emit({"ok": True, "applied": len(results)})
             return 0
@@ -911,22 +1288,35 @@ def main(argv: list[str] | None = None) -> int:
                 "baseHeight": args.base_height, "material": material_from_args(args), "id": args.id,
                 **({"height": args.height} if args.height is not None else {}),
                 **({"thickness": args.thickness} if args.thickness is not None else {}),
+                "execution": execution,
             }, args.actor),
-            "add-door": lambda: op_add_opening(scene, "door", vars_for_opening(args), args.actor),
-            "add-window": lambda: op_add_opening(scene, "window", vars_for_opening(args), args.actor),
-            "add-opening": lambda: op_add_opening(scene, "opening", vars_for_opening(args), args.actor),
+            "add-door": lambda: op_add_opening(
+                scene, "door", {**vars_for_opening(args), "execution": execution}, args.actor,
+            ),
+            "add-window": lambda: op_add_opening(
+                scene, "window", {**vars_for_opening(args), "execution": execution}, args.actor,
+            ),
+            "add-opening": lambda: op_add_opening(
+                scene, "opening", {**vars_for_opening(args), "execution": execution}, args.actor,
+            ),
             "add-item": lambda: op_add_item(scene, {
                 "category": args.category, "center": args.center,
                 "yaw": math.radians(args.yaw_deg), "size": args.size, "color": args.color,
                 "layout": json.loads(args.layout) if args.layout else None,
-                "confidence": args.confidence, "id": args.id,
+                "confidence": args.confidence, "id": args.id, "execution": execution,
             }, args.actor),
-            "add-slab": lambda: op_add_polygon_node(scene, "slab", vars_for_polygon(args), args.actor),
-            "add-ceiling": lambda: op_add_polygon_node(scene, "ceiling", vars_for_polygon(args), args.actor),
-            "add-zone": lambda: op_add_polygon_node(scene, "zone", vars_for_polygon(args), args.actor),
+            "add-slab": lambda: op_add_polygon_node(
+                scene, "slab", {**vars_for_polygon(args), "execution": execution}, args.actor,
+            ),
+            "add-ceiling": lambda: op_add_polygon_node(
+                scene, "ceiling", {**vars_for_polygon(args), "execution": execution}, args.actor,
+            ),
+            "add-zone": lambda: op_add_polygon_node(
+                scene, "zone", {**vars_for_polygon(args), "execution": execution}, args.actor,
+            ),
             "add-column": lambda: op_add_column(scene, {
                 "center": args.center, "size": args.size, "height": args.height,
-                "yaw": math.radians(args.yaw_deg), "id": args.id,
+                "yaw": math.radians(args.yaw_deg), "id": args.id, "execution": execution,
             }, args.actor),
             "update-node": lambda: op_update_node(scene, {
                 "id": args.id,
@@ -935,21 +1325,25 @@ def main(argv: list[str] | None = None) -> int:
             "delete-node": lambda: {"deleted": op_delete_node(scene, args.id)},
             "attach-evidence": lambda: op_attach_evidence(scene, scene_path, {
                 "id": args.id, "type": args.type, "path": args.path,
+                "sourceRole": args.source_role, "producer": args.producer,
+                "provenanceReceipt": args.provenance_receipt,
                 "note": args.note, "allow_missing": args.allow_missing,
             }),
             "accept": lambda: op_accept(scene, scene_path, {
-                "id": args.id, "mode": args.mode, "reviewer": args.reviewer,
-                "reason": args.reason, "allow_self": args.allow_self,
+                "id": args.id, "mode": args.mode, "reviewerIdentity": execution,
+                "reason": args.reason,
             }),
-            "reject": lambda: op_reject(scene, {"id": args.id, "reviewer": args.reviewer, "reason": args.reason}),
+            "reject": lambda: op_reject(scene, {
+                "id": args.id, "reviewerIdentity": execution, "reason": args.reason,
+            }),
             "transition-issue": lambda: op_transition_issue(scene, scene_path, {
                 "id": args.id, "expectedStatus": args.expected_status, "status": args.status,
-                "reviewer": args.reviewer, "reason": args.reason,
+                "reviewerIdentity": execution, "reason": args.reason,
                 "receiptPath": args.receipt_path, "receiptSha256": args.receipt_sha256,
             }),
             "open-issue": lambda: op_open_issue(scene, {
                 "id": args.id, "severity": args.severity, "kind": args.kind,
-                "summary": args.summary, "openedBy": args.opened_by,
+                "summary": args.summary, "openedBy": args.opened_by, "execution": execution,
                 "targetNodeIds": args.target_node_id or [], "area": args.area,
             }),
         }

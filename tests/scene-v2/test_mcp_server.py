@@ -9,6 +9,8 @@ and a blocking readline on a crashed server would hang the whole suite.
 from __future__ import annotations
 
 import json
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 import queue
 import subprocess
@@ -19,15 +21,43 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER = REPO_ROOT / "scene-core" / "mcp_server.py"
+POLICIES = json.loads((REPO_ROOT / "schemas" / "tool-policies-v1.json").read_text(encoding="utf-8"))["policies"]
 
 RESPONSE_TIMEOUT_S = 20.0
 
 EXPECTED_TOOLS = {
     "init_scene", "create_wall", "add_door", "add_window", "add_opening", "add_item",
     "add_slab", "add_ceiling", "add_zone", "add_column", "update_node", "delete_node",
-    "attach_evidence", "accept_node", "reject_node", "open_issue", "transition_issue", "apply_patch", "find_nodes",
+    "attach_evidence", "open_issue", "apply_patch", "find_nodes",
     "measure", "get_scene_summary", "get_node", "validate_scene", "undo", "get_agent_guide",
 }
+
+
+def policy_digest(policy_id: str) -> str:
+    raw = json.dumps(POLICIES[policy_id], sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def identity(actor, run_id, role, policy, reviewer_class=None):
+    value = {
+        "schemaVersion": "1.0", "actorId": actor, "runId": run_id, "role": role,
+        "provider": "mcp-test", "model": "fixture", "policyId": policy,
+        "toolPolicyHash": policy_digest(policy),
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "attestation": {"issuer": "mcp-test", "enforcementMode": "application-enforced"},
+    }
+    if reviewer_class:
+        value["reviewerClass"] = reviewer_class
+    return value
+
+
+AUTHOR_IDENTITY = identity(
+    "mcp-test", "11111111-1111-4111-8111-111111111111", "author", "author-v1",
+)
+REVIEWER_IDENTITY = identity(
+    "reviewer-east", "22222222-2222-4222-8222-222222222222",
+    "reviewer", "reviewer-readonly-v1", "regional",
+)
 
 
 class McpServerTestCase(unittest.TestCase):
@@ -40,8 +70,13 @@ class McpServerTestCase(unittest.TestCase):
         self.next_id = 0
         self.stderr_lines: list[str] = []
 
+        self._start_server(AUTHOR_IDENTITY)
+
+    def _start_server(self, identity_value: dict) -> None:
+        self.identity_path = self.root / f"identity-{identity_value['actorId']}.json"
+        self.identity_path.write_text(json.dumps(identity_value), encoding="utf-8")
         self.process = subprocess.Popen(
-            [sys.executable, str(SERVER), "--scene", str(self.scene_path), "--actor", "mcp-test"],
+            [sys.executable, str(SERVER), "--scene", str(self.scene_path), "--identity", str(self.identity_path)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1,
         )
@@ -53,7 +88,7 @@ class McpServerTestCase(unittest.TestCase):
         for reader in self.readers:
             reader.start()
 
-    def tearDown(self) -> None:
+    def _stop_server(self) -> None:
         # Closing stdin is the documented shutdown for an MCP stdio server; kill
         # only if it refuses, so a hung server surfaces as a slow test not a leak.
         try:
@@ -70,6 +105,14 @@ class McpServerTestCase(unittest.TestCase):
         for stream in (self.process.stdout, self.process.stderr):
             if stream is not None and not stream.closed:
                 stream.close()
+    def restart_server(self, identity_value: dict) -> None:
+        self._stop_server()
+        self.responses = queue.Queue()
+        self.stderr_lines = []
+        self._start_server(identity_value)
+
+    def tearDown(self) -> None:
+        self._stop_server()
         self.temp.cleanup()
 
     @staticmethod
@@ -270,30 +313,32 @@ class AuthoringWorkflowTest(McpServerTestCase):
         self.call_ok("init_scene", {"dataset": "mcp-capture-004"})
         self.call_ok("create_wall", {"id": "wall_west", "start": [0, 0], "end": [0, 6], "thickness": 0.12})
 
+        self.restart_server(REVIEWER_IDENTITY)
+        self.handshake()
         payload, is_error = self.call_tool("accept_node", {
-            "id": "wall_west", "mode": "measured", "reviewer": "reviewer-east",
+            "id": "wall_west", "mode": "measured",
         })
         self.assertTrue(is_error)
         self.assertIn("MEASURED_NEEDS_VERIFIED_SOURCE", payload["message"])
 
+        self.restart_server(AUTHOR_IDENTITY)
+        self.handshake()
         (self.root / "west-slice.json").write_text(json.dumps({"kind": "slice"}), encoding="utf-8")
         self.call_ok("attach_evidence", {
             "id": "wall_west", "type": "high-structure-slice", "path": "west-slice.json",
+            "producer": "mcp-test",
         })
 
-        # The server actor authored the wall, so it may not review its own work.
-        payload, is_error = self.call_tool("accept_node", {
-            "id": "wall_west", "mode": "measured", "reviewer": "mcp-test",
-        })
-        self.assertTrue(is_error)
-        self.assertIn("SELF_REVIEW_FORBIDDEN", payload["message"])
-
+        self.restart_server(REVIEWER_IDENTITY)
+        self.handshake()
         entry = self.call_ok("accept_node", {
-            "id": "wall_west", "mode": "measured", "reviewer": "reviewer-east",
+            "id": "wall_west", "mode": "measured",
         })
         self.assertEqual(entry["status"], "accepted-measured")
 
         # Editing accepted geometry demotes it back to candidate.
+        self.restart_server(AUTHOR_IDENTITY)
+        self.handshake()
         self.call_ok("update_node", {"id": "wall_west", "updates": {"height": 2.85}})
         self.assertEqual(self.call_ok("get_node", {"id": "wall_west"})["evidence"]["status"], "candidate")
 

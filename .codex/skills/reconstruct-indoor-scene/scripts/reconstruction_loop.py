@@ -20,6 +20,12 @@ from typing import Any
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+SCENE_CORE_ROOT = REPOSITORY_ROOT / "scene-core"
+if str(SCENE_CORE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCENE_CORE_ROOT))
+
+import execution_identity as execution_identity_api  # noqa: E402
+
 PIPELINE_CONTRACT_PATH = REPOSITORY_ROOT / "schemas" / "pipeline-contract-v2.json"
 PIPELINE_CONTRACT = json.loads(PIPELINE_CONTRACT_PATH.read_text(encoding="utf-8"))
 PIPELINE_CONTRACT_DIGEST = hashlib.sha256(PIPELINE_CONTRACT_PATH.read_bytes()).hexdigest()
@@ -126,6 +132,51 @@ def actor_key(value: str) -> str:
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,63}", normalized):
         raise WorkflowError("actor identity must be a 3-64 character ASCII id using letters, digits, dot, underscore, or hyphen")
     return normalized
+
+
+def bind_execution(
+    state: dict[str, Any],
+    identity_path: Path | None,
+    operation: str,
+    roles: set[str] | None = None,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    if identity_path is None:
+        raise WorkflowError(
+            "execution identity is required for this operation",
+            "EXECUTION_IDENTITY_REQUIRED",
+            ["provide --execution <execution-identity-v1.json>"],
+        )
+    try:
+        identity = execution_identity_api.load_identity(identity_path.resolve())
+        identity = execution_identity_api.require_operation(identity, operation, roles)
+        digest = execution_identity_api.identity_digest(identity)
+    except execution_identity_api.IdentityError as error:
+        raise WorkflowError(str(error), error.code) from error
+    if actor and actor_key(actor) != identity["actorId"]:
+        raise WorkflowError(
+            "--actor does not match the execution identity",
+            "EXECUTION_ACTOR_MISMATCH",
+        )
+    executions = state.setdefault("executions", {})
+    existing = executions.get(identity["runId"])
+    if isinstance(existing, dict) and existing.get("identityDigest") != digest:
+        raise WorkflowError(
+            "runId is already registered to a different actor, role, or tool policy",
+            "EXECUTION_RUN_ROLE_CONFLICT",
+        )
+    executions[identity["runId"]] = {"identity": identity, "identityDigest": digest}
+    return identity
+
+
+def registered_identity(state: dict[str, Any], run_id: object) -> dict[str, Any]:
+    record = state.get("executions", {}).get(str(run_id or ""))
+    if not isinstance(record, dict) or not isinstance(record.get("identity"), dict):
+        raise WorkflowError(
+            "recorded execution identity is missing",
+            "EXECUTION_IDENTITY_REQUIRED",
+        )
+    return record["identity"]
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -311,6 +362,8 @@ def blank_stage(stage_name: str) -> dict[str, Any]:
         "sceneSha256": None,
         "evaluator": STAGE_SPECS[stage_name]["evaluator"],
         "evaluation": None,
+        "executionRunId": None,
+        "identityDigest": None,
     }
 
 
@@ -359,6 +412,7 @@ def initialize_workflow(job_path: Path, state_path: Path) -> dict[str, Any]:
         "stageOrder": list(STAGE_ORDER),
         "stages": stages,
         "capabilities": initial_capabilities(job, job_path),
+        "executions": {},
         "issues": [],
         "currentSceneSha256": None,
         "lastCheckpoint": None,
@@ -468,6 +522,23 @@ def command_migrate_state(args: argparse.Namespace) -> None:
             }
         )
 
+    migrated_issues: list[dict[str, Any]] = []
+    for legacy_issue in legacy.get("issues", []):
+        if not isinstance(legacy_issue, dict):
+            continue
+        migrated_issue = dict(legacy_issue)
+        legacy_status = str(migrated_issue.get("status") or "OPEN")
+        migrated_issue["legacyStatus"] = legacy_status
+        migrated_issue["status"] = "OPEN"
+        migrated_issue["identityRecheckRequired"] = True
+        migrated_issue["migrationReason"] = "LEGACY_REVIEW_IDENTITY_RECHECK_REQUIRED"
+        migrated_issue.pop("patch", None)
+        migrated_issue.pop("resolution", None)
+        migrated_issue.pop("resolvedAt", None)
+        migrated_issue.pop("resolvedBy", None)
+        migrated_issue.pop("resolvedByRunId", None)
+        migrated_issues.append(migrated_issue)
+
     migrated = dict(legacy)
     migrated.update(
         {
@@ -475,6 +546,8 @@ def command_migrate_state(args: argparse.Namespace) -> None:
             "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
             "stageOrder": list(STAGE_ORDER),
             "stages": migrated_stages,
+            "executions": {},
+            "issues": migrated_issues,
         }
     )
     event(
@@ -514,6 +587,8 @@ def reset_stage(state: dict[str, Any], stage_name: str, status: str, reason: str
             "artifacts": [],
             "sceneSha256": None,
             "evaluation": None,
+            "executionRunId": None,
+            "identityDigest": None,
         }
     )
 
@@ -551,6 +626,17 @@ def require_capabilities(state: dict[str, Any], stage_name: str) -> None:
 
 def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
     current_code_sha = sha256_file(Path(__file__))
+    def artifacts_are_current(stage: dict[str, Any]) -> bool:
+        for item in stage.get("artifacts", []):
+            path_text = item.get("path") if isinstance(item, dict) else None
+            expected_sha = item.get("sha256") if isinstance(item, dict) else None
+            if not path_text or not expected_sha:
+                return False
+            path = Path(str(path_text))
+            if not path.is_file() or sha256_file(path) != expected_sha:
+                return False
+        return True
+
     missing = [
         name for name in STAGE_SPECS[stage_name]["dependsOn"]
         if (
@@ -560,6 +646,7 @@ def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
             != PIPELINE_CONTRACT_DIGEST
             or state["stages"][name]["evaluation"].get("evaluatorCodeSha256")
             != current_code_sha
+            or not artifacts_are_current(state["stages"][name])
         )
     ]
     if missing:
@@ -568,6 +655,30 @@ def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
             "STAGE_PREREQUISITE_INCOMPLETE_OR_STALE",
             [f"reevaluate prerequisite stage {name}" for name in missing],
         )
+
+
+def required_upstream_input_bindings(
+    state: dict[str, Any], stage_name: str,
+) -> list[dict[str, str]]:
+    bindings: list[dict[str, str]] = []
+    for prerequisite_name in STAGE_SPECS[stage_name]["dependsOn"]:
+        prerequisite = state["stages"][prerequisite_name]
+        required_types = list(STAGE_SPECS[prerequisite_name]["requiredArtifacts"])
+        for index, item in enumerate(prerequisite.get("artifacts", [])):
+            if not isinstance(item, dict) or not item.get("sha256"):
+                continue
+            artifact_type = item.get("artifactType")
+            if not artifact_type and index < len(required_types):
+                artifact_type = required_types[index]
+            if not artifact_type or str(artifact_type).endswith("-checkpoint"):
+                continue
+            binding = {
+                "artifactType": str(artifact_type),
+                "artifactSha256": str(item["sha256"]),
+            }
+            if binding not in bindings:
+                bindings.append(binding)
+    return bindings
 
 
 def open_issues(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -613,6 +724,7 @@ def validate_typed_artifact(
     expected_type: str,
     state: dict[str, Any],
     scene_sha: str | None,
+    required_inputs: list[dict[str, str]] | None = None,
 ) -> dict[str, str]:
     if expected_type == "scene-authority":
         return validate_scene_authority(path, state)
@@ -690,6 +802,13 @@ def validate_typed_artifact(
             "TYPED_ARTIFACT_SCENE_BINDING_STALE",
             [f"regenerate {expected_type} from the current scene authority"],
         )
+    missing_inputs = [item for item in (required_inputs or []) if item not in inputs]
+    if missing_inputs:
+        raise WorkflowError(
+            f"typed artifact {expected_type} is stale for prerequisite artifacts",
+            "TYPED_ARTIFACT_PREREQUISITE_BINDING_STALE",
+            ["regenerate the artifact from the current direct prerequisite artifacts"],
+        )
     item = artifact(path, "tool")
     item["artifactType"] = expected_type
     item["payloadDigest"] = value["payloadDigest"]
@@ -744,6 +863,8 @@ def parse_stage_artifacts(
             name,
             state,
             scene_sha if stage_spec["sceneBinding"] == "authority" and name != "scene-authority" else None,
+            required_upstream_input_bindings(state, stage_spec["name"])
+            if name != "scene-authority" else None,
         )
         for name in stage_spec["requiredArtifacts"]
     ]
@@ -947,12 +1068,29 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
             "STAGE_BLOCKED_BY_OPEN_ISSUES",
         )
     if args.name in {"presentation-review", "regional-review", "global-review"}:
-        author_actor = state["stages"]["author"].get("actor")
-        if author_actor and actor_key(args.actor) == actor_key(author_actor):
-            raise WorkflowError(
-                f"stage {args.name} evaluator must differ from the author stage actor",
-                "STAGE_REVIEWER_NOT_INDEPENDENT",
+        reviewer_identity = bind_execution(
+            state, getattr(args, "execution", None), "pipeline:submit-verdict",
+            execution_identity_api.REVIEW_ROLES, args.actor,
+        )
+        author_identity = registered_identity(
+            state, state["stages"]["author"].get("executionRunId"),
+        )
+        try:
+            execution_identity_api.require_independent_reviewer(
+                author_identity,
+                reviewer_identity,
+                severity="P1" if args.name in {"regional-review", "global-review"} else None,
+                required_input_digests={
+                    *[item["sha256"] for item in artifacts],
+                    *([scene_sha] if scene_sha else []),
+                },
             )
+        except execution_identity_api.IdentityError as error:
+            raise WorkflowError(str(error), error.code) from error
+    else:
+        reviewer_identity = bind_execution(
+            state, getattr(args, "execution", None), "pipeline:patch", {"author"}, args.actor,
+        )
 
     evaluator_name = stage_spec["evaluator"]
     evaluator = STAGE_EVALUATORS.get(evaluator_name)
@@ -998,6 +1136,9 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
         "evaluatorCodeSha256": sha256_file(Path(__file__)),
         "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
         "artifactSetDigest": artifact_set_digest,
+        "prerequisiteArtifactSetDigest": canonical_digest(
+            required_upstream_input_bindings(state, args.name)
+        ),
         "result": "PASS",
         "checks": checks,
         "evaluatedAt": now_iso(),
@@ -1012,6 +1153,11 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
             "artifacts": artifacts,
             "sceneSha256": scene_sha,
             "evaluation": evaluation,
+            "executionRunId": reviewer_identity["runId"] if reviewer_identity else None,
+            "identityDigest": (
+                execution_identity_api.identity_digest(reviewer_identity)
+                if reviewer_identity else None
+            ),
         }
     )
     event(
@@ -1030,7 +1176,9 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
 
 def command_stage(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:update-stage", {"author"}, args.actor,
+    )
     if args.name in {"intake", "publish"}:
         raise WorkflowError(f"{args.name} is owned by its dedicated pipeline command")
     if args.status == "PASS":
@@ -1039,7 +1187,8 @@ def command_stage(args: argparse.Namespace) -> None:
             "GENERIC_STAGE_PASS_FORBIDDEN",
             [
                 f"python {Path(__file__).name} evaluate-stage --state {args.state} "
-                f"--actor {args.actor} --name {args.name} --artifact <artifactType=path>"
+                f"--actor {args.actor} --execution <execution-identity.json> "
+                f"--name {args.name} --artifact <artifactType=path>"
             ],
         )
     artifacts = [artifact(Path(value)) for value in args.artifact]
@@ -1064,22 +1213,31 @@ def command_stage(args: argparse.Namespace) -> None:
             "status": args.status,
             "attempt": int(current.get("attempt", 0)) + 1,
             "updatedAt": now_iso(),
-            "actor": args.actor,
+            "actor": identity["actorId"],
             "note": args.note,
             "artifacts": artifacts,
             "sceneSha256": scene_sha,
             "evaluation": None,
+            "executionRunId": identity["runId"],
+            "identityDigest": execution_identity_api.identity_digest(identity),
         }
     )
     if args.status != "PASS":
         invalidate_after(state, args.name, f"{args.name} became {args.status}")
-    event(state, args.actor, "stage", {"name": args.name, "status": args.status, "sceneSha256": scene_sha})
+    event(
+        state,
+        identity["actorId"],
+        "stage",
+        {"name": args.name, "status": args.status, "sceneSha256": scene_sha},
+    )
     save_state(args.state, state)
 
 
 def command_open_issue(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:open-issue", {"author"}, args.actor,
+    )
     evidence = parse_evidence(args.evidence)
     if not evidence or not {item["role"] for item in evidence}.intersection(
         {"raw", "overlay", "elevation", "photo"}
@@ -1095,7 +1253,8 @@ def command_open_issue(args: argparse.Namespace) -> None:
         "targets": args.target,
         "summary": args.summary,
         "openedAt": now_iso(),
-        "openedBy": args.actor,
+        "openedBy": identity["actorId"],
+        "openedByRunId": identity["runId"],
         "evidence": evidence,
         "attempts": [],
         "stagnationCount": 0,
@@ -1115,7 +1274,9 @@ def command_open_issue(args: argparse.Namespace) -> None:
 
 def command_patch(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:patch", {"author"}, args.actor,
+    )
     issue = issue_by_id(state, args.issue)
     if issue.get("status") == "RESOLVED":
         raise WorkflowError("resolved issue must be reopened as a new issue")
@@ -1143,7 +1304,9 @@ def command_patch(args: argparse.Namespace) -> None:
         {
             "status": "PATCHED",
             "patch": {
-                "author": args.actor,
+                "author": identity["actorId"],
+                "authorExecutionRunId": identity["runId"],
+                "authorIdentityDigest": execution_identity_api.identity_digest(identity),
                 "at": now_iso(),
                 "sceneSha256": scene["sha256"],
                 "checkpoint": checkpoint,
@@ -1167,7 +1330,10 @@ def command_patch(args: argparse.Namespace) -> None:
 
 def command_review(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    reviewer_identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:submit-verdict",
+        execution_identity_api.REVIEW_ROLES, args.actor,
+    )
     issue = issue_by_id(state, args.issue)
     recheck = issue.get("status") == "NEEDS_RECHECK"
     if not recheck and (issue.get("status") != "PATCHED" or not isinstance(issue.get("patch"), dict)):
@@ -1185,15 +1351,26 @@ def command_review(args: argparse.Namespace) -> None:
     if len({item["sha256"] for item in evidence}) < 2:
         raise WorkflowError("review evidence must contain at least two distinct artifacts")
     patch_author = patch.get("author") or issue.get("openedBy")
-    if actor_key(args.actor) == actor_key(str(patch_author)):
-        raise WorkflowError("patch author cannot review the same issue")
+    author_run_id = patch.get("authorExecutionRunId") or issue.get("openedByRunId")
+    author_identity = registered_identity(state, author_run_id)
+    try:
+        execution_identity_api.require_independent_reviewer(
+            author_identity,
+            reviewer_identity,
+            severity=issue.get("severity"),
+            required_input_digests={scene["sha256"], *[item["sha256"] for item in evidence]},
+        )
+    except execution_identity_api.IdentityError as error:
+        raise WorkflowError(str(error), error.code) from error
     if args.verdict == "PASS" and args.score < 85:
         raise WorkflowError("PASS review score must be at least 85")
     previous_scores = [attempt.get("score") for attempt in issue.get("attempts", [])]
     previous_score = previous_scores[-1] if previous_scores else None
     attempt = {
         "at": now_iso(),
-        "reviewer": args.actor,
+        "reviewer": reviewer_identity["actorId"],
+        "reviewerExecutionRunId": reviewer_identity["runId"],
+        "reviewerIdentityDigest": execution_identity_api.identity_digest(reviewer_identity),
         "verdict": args.verdict,
         "score": args.score,
         "sceneSha256": scene["sha256"],
@@ -1208,7 +1385,8 @@ def command_review(args: argparse.Namespace) -> None:
                 "status": "RESOLVED",
                 "resolvedOnSha256": scene["sha256"],
                 "resolvedAt": now_iso(),
-                "resolvedBy": args.actor,
+                "resolvedBy": reviewer_identity["actorId"],
+                "resolvedByRunId": reviewer_identity["runId"],
                 "stagnationCount": 0,
                 "strategyChangeRequired": False,
             }
@@ -1230,7 +1408,9 @@ def command_review(args: argparse.Namespace) -> None:
 
 def command_restore(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:restore", {"author"}, args.actor,
+    )
     checkpoint = state.get("lastCheckpoint")
     if not isinstance(checkpoint, dict):
         raise WorkflowError("no recorded checkpoint is available")
@@ -1247,13 +1427,17 @@ def command_restore(args: argparse.Namespace) -> None:
     shutil.copyfile(source, destination)
     state["currentSceneSha256"] = checkpoint["sha256"]
     invalidate_after(state, "author", "restored last checkpoint")
-    event(state, args.actor, "restore", {"scene": str(destination), "sha256": checkpoint["sha256"]})
+    event(state, identity["actorId"], "restore", {
+        "scene": str(destination), "sha256": checkpoint["sha256"], "runId": identity["runId"],
+    })
     save_state(args.state, state)
 
 
 def command_invalidate(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:invalidate", {"author"}, args.actor,
+    )
     if not args.reason.strip():
         raise WorkflowError(
             "invalidation reason must not be empty",
@@ -1279,7 +1463,7 @@ def command_invalidate(args: argparse.Namespace) -> None:
     apply_change_invalidation(state, args.change, args.reason.strip())
     event(
         state,
-        args.actor,
+        identity["actorId"],
         "invalidate",
         {"change": args.change, "reason": args.reason.strip()},
     )
@@ -1288,7 +1472,9 @@ def command_invalidate(args: argparse.Namespace) -> None:
 
 def command_publish(args: argparse.Namespace) -> None:
     state = read_state(args.state)
-    actor_key(args.actor)
+    publisher_identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:publish", {"publisher"}, args.actor,
+    )
     require_prerequisites(state, "publish")
     require_capabilities(state, "publish")
     if open_issues(state):
@@ -1302,6 +1488,17 @@ def command_publish(args: argparse.Namespace) -> None:
             )
         raise WorkflowError("SCHEMA_VERSION_MISMATCH:publish requires Semantic Scene V2")
     review = load_json(args.review)
+    review_identity = review.get("reviewer")
+    try:
+        normalized_review_identity = execution_identity_api.normalize_identity(review_identity)
+    except execution_identity_api.IdentityError as error:
+        raise WorkflowError(str(error), error.code) from error
+    global_review_run = state["stages"]["global-review"].get("executionRunId")
+    if normalized_review_identity.get("runId") != global_review_run:
+        raise WorkflowError(
+            "review receipt identity differs from the global-review execution",
+            "REVIEW_RECEIPT_IDENTITY_STALE",
+        )
     quality_report_path = getattr(args, "quality_report", None)
     if quality_report_path is None:
         quality_report_path = getattr(args, "score", None)
@@ -1367,7 +1564,7 @@ def command_publish(args: argparse.Namespace) -> None:
     manifest = {
         "schemaVersion": "2.0",
         "publishedAt": now_iso(),
-        "publisher": args.actor,
+        "publisher": publisher_identity,
         "jobId": state.get("jobId"),
         "captureFingerprint": state.get("captureFingerprint"),
         "geometryDigest": geometry_digest,
@@ -1386,7 +1583,9 @@ def command_publish(args: argparse.Namespace) -> None:
             "status": "PASS",
             "attempt": int(stage.get("attempt", 0)) + 1,
             "updatedAt": now_iso(),
-            "actor": args.actor,
+            "actor": publisher_identity["actorId"],
+            "executionRunId": publisher_identity["runId"],
+            "identityDigest": execution_identity_api.identity_digest(publisher_identity),
             "note": args.note,
             "artifacts": [artifact(publish_dir / "publish-manifest.json")],
             "sceneSha256": scene["sha256"],
@@ -1401,7 +1600,7 @@ def command_publish(args: argparse.Namespace) -> None:
     )
     event(
         state,
-        args.actor,
+        publisher_identity["actorId"],
         "publish",
         {
             "directory": str(publish_dir),
@@ -1466,7 +1665,8 @@ def next_actions(state: dict[str, Any], state_path: Path) -> list[str]:
         if name == "publish":
             return [
                 f"python {Path(__file__).name} publish --state {state_path} "
-                "--actor <publisher> --scene <scene-authority.json> --review <review-receipt.json> "
+                "--actor <publisher> --execution <publisher-identity.json> "
+                "--scene <scene-authority.json> --review <review-receipt.json> "
                 "--quality-report <quality-report.json> --output <publish-root>"
             ]
         required = " ".join(
@@ -1477,7 +1677,8 @@ def next_actions(state: dict[str, Any], state_path: Path) -> list[str]:
         scene = " --scene <scene-authority.json>" if STAGE_SPECS[name]["sceneBinding"] == "authority" else ""
         return [
             f"python {Path(__file__).name} evaluate-stage --state {state_path} "
-            f"--actor <stage-actor> --name {name}{scene} {required}".strip()
+            f"--actor <stage-actor> --execution <execution-identity.json> "
+            f"--name {name}{scene} {required}".strip()
         ]
     return []
 
@@ -1509,6 +1710,7 @@ def build_parser() -> argparse.ArgumentParser:
     stage = subparsers.add_parser("stage")
     stage.add_argument("--state", required=True, type=Path)
     stage.add_argument("--actor", required=True)
+    stage.add_argument("--execution", required=True, type=Path)
     stage.add_argument("--name", required=True, choices=STAGE_ORDER)
     stage.add_argument("--status", required=True, choices=sorted(STAGE_STATES - {"PASS"}))
     stage.add_argument("--artifact", action="append", default=[])
@@ -1518,6 +1720,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate-stage")
     evaluate.add_argument("--state", required=True, type=Path)
     evaluate.add_argument("--actor", required=True)
+    evaluate.add_argument("--execution", required=True, type=Path)
     evaluate.add_argument("--name", required=True, choices=STAGE_ORDER)
     evaluate.add_argument("--artifact", action="append", default=[])
     evaluate.add_argument("--scene", type=Path)
@@ -1526,6 +1729,7 @@ def build_parser() -> argparse.ArgumentParser:
     issue = subparsers.add_parser("open-issue")
     issue.add_argument("--state", required=True, type=Path)
     issue.add_argument("--actor", required=True)
+    issue.add_argument("--execution", required=True, type=Path)
     issue.add_argument("--area", required=True)
     issue.add_argument("--severity", required=True, choices=("P0", "P1", "P2"))
     issue.add_argument("--kind", required=True)
@@ -1536,6 +1740,7 @@ def build_parser() -> argparse.ArgumentParser:
     patch = subparsers.add_parser("patch")
     patch.add_argument("--state", required=True, type=Path)
     patch.add_argument("--actor", required=True)
+    patch.add_argument("--execution", required=True, type=Path)
     patch.add_argument("--issue", required=True)
     patch.add_argument("--scene", required=True, type=Path)
     patch.add_argument("--checkpoint-dir", type=Path)
@@ -1545,6 +1750,7 @@ def build_parser() -> argparse.ArgumentParser:
     review = subparsers.add_parser("review")
     review.add_argument("--state", required=True, type=Path)
     review.add_argument("--actor", required=True)
+    review.add_argument("--execution", required=True, type=Path)
     review.add_argument("--issue", required=True)
     review.add_argument("--scene", required=True, type=Path)
     review.add_argument("--verdict", required=True, choices=("PASS", "FAIL"))
@@ -1555,11 +1761,13 @@ def build_parser() -> argparse.ArgumentParser:
     restore = subparsers.add_parser("restore")
     restore.add_argument("--state", required=True, type=Path)
     restore.add_argument("--actor", required=True)
+    restore.add_argument("--execution", required=True, type=Path)
     restore.add_argument("--scene", required=True, type=Path)
 
     invalidate = subparsers.add_parser("invalidate")
     invalidate.add_argument("--state", required=True, type=Path)
     invalidate.add_argument("--actor", required=True)
+    invalidate.add_argument("--execution", required=True, type=Path)
     invalidate.add_argument(
         "--change",
         required=True,
@@ -1571,6 +1779,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish = subparsers.add_parser("publish")
     publish.add_argument("--state", required=True, type=Path)
     publish.add_argument("--actor", required=True)
+    publish.add_argument("--execution", required=True, type=Path)
     publish.add_argument("--scene", required=True, type=Path)
     publish.add_argument("--review", required=True, type=Path)
     publish.add_argument("--quality-report", required=True, type=Path)

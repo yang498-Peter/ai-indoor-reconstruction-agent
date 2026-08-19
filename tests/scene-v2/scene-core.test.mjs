@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   planToDisplay,
   computeWallJoinery,
@@ -7,6 +8,7 @@ import {
   partFootprint,
   isSceneV2,
   compileSceneV2,
+  sceneClaimPayload,
 } from '../../scene-core/scene-core.js';
 
 const approx = (actual, expected, epsilon = 1e-6) => {
@@ -16,9 +18,26 @@ const approxPoint = (actual, expected, epsilon = 1e-6) => {
   approx(actual[0], expected[0], epsilon);
   approx(actual[1], expected[1], epsilon);
 };
+const accepted = (status, sources) => ({
+  status,
+  sources,
+  claimHash: 'a'.repeat(64),
+  acceptedSourceDigest: 'b'.repeat(64),
+  reviewer: {
+    actorId: 'reviewer-east',
+    runId: '22222222-2222-4222-8222-222222222222',
+  },
+});
 
 test('planToDisplay maps source plan Z-up to three Y-up', () => {
   assert.deepEqual(planToDisplay([3, 2], 1.5), [3, 1.5, -2]);
+});
+
+test('sceneClaimPayload matches the cross-runtime contract fixture', () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL('./claim-payload-fixture.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(sceneClaimPayload(fixture.scene, 'wall_a'), fixture.wallClaim);
 });
 
 test('L-corner: both walls receive exact mitered corners', () => {
@@ -130,15 +149,21 @@ test('compileSceneV2 separates accepted, candidate and rejected', () => {
     },
     rootNodeIds: ['level_1'],
     evidence: {
-      wall_a: { status: 'accepted-measured', sources: [{ type: 'overview' }] },
-      door_a: { status: 'accepted-measured', sources: [{ type: 'photo' }] },
-      glass_a: { status: 'accepted-measured', sources: [{ type: 'overview' }] },
-      elevated_head: { status: 'accepted-measured', sources: [{ type: 'elevation' }] },
-      door_g: { status: 'accepted-measured', sources: [{ type: 'photo' }] },
+      wall_a: accepted('accepted-measured', [{ type: 'overview' }]),
+      door_a: accepted('accepted-measured', [{ type: 'photo' }]),
+      glass_a: accepted('accepted-measured', [{ type: 'overview' }]),
+      elevated_head: accepted('accepted-measured', [{ type: 'elevation' }]),
+      door_g: accepted('accepted-measured', [{ type: 'photo' }]),
       wall_rejected: { status: 'rejected', reason: 'shadow artifact' },
-      item_ok: { status: 'accepted-inferred', sources: [{ type: 'tabletop' }, { type: 'photo' }], reason: 'x' },
+      item_ok: {
+        ...accepted('accepted-inferred', [{ type: 'tabletop' }, { type: 'photo' }]),
+        reason: 'x',
+      },
     },
   };
+  for (const nodeId of ['wall_a', 'door_a', 'glass_a', 'elevated_head', 'door_g', 'item_ok']) {
+    raw.evidence[nodeId].claimSnapshot = sceneClaimPayload(raw, nodeId);
+  }
   assert.ok(isSceneV2(raw));
   const compiled = compileSceneV2(raw);
 
@@ -179,6 +204,60 @@ test('compileSceneV2 separates accepted, candidate and rejected', () => {
   // Panels contract: pipeline synthesized, levels present.
   assert.equal(compiled.pipeline.length, 6);
   assert.equal(compiled.levels[0].height, 3);
+});
+
+test('compileSceneV2 demotes an accepted claim when hosted geometry changes', () => {
+  const raw = {
+    schemaVersion: '2.0', dataset: 'stale-host', coordinateFrame: {},
+    nodes: {
+      level_1: { id: 'level_1', type: 'level', parentId: null, children: ['wall_a'], height: 3 },
+      wall_a: { id: 'wall_a', type: 'wall', parentId: 'level_1', children: ['door_a'], start: [0, 0], end: [4, 0], height: 3, thickness: 0.12 },
+      door_a: { id: 'door_a', type: 'door', parentId: 'wall_a', children: [], hostOffsetM: 2, width: 0.9, height: 2.1, sillHeight: 0 },
+    },
+    rootNodeIds: ['level_1'], evidence: {},
+  };
+  raw.evidence.wall_a = accepted('accepted-measured', [{ type: 'overview' }]);
+  raw.evidence.wall_a.claimSnapshot = sceneClaimPayload(raw, 'wall_a');
+  raw.nodes.door_a.width = 1.2;
+  const compiled = compileSceneV2(raw);
+  assert.equal(compiled.structures.length, 0);
+  assert.ok(compiled.structureCandidates.some((value) => value.id === 'wall_a'));
+});
+
+test('compileSceneV2 refuses legacy accepted labels without a bound claim receipt', () => {
+  const raw = {
+    schemaVersion: '2.0', dataset: 'legacy-label', coordinateFrame: {},
+    nodes: {
+      level_1: { id: 'level_1', type: 'level', parentId: null, children: ['wall_a'], height: 3 },
+      wall_a: {
+        id: 'wall_a', type: 'wall', parentId: 'level_1', children: [],
+        start: [0, 0], end: [4, 0], height: 3, thickness: 0.12,
+      },
+    },
+    rootNodeIds: ['level_1'],
+    evidence: {
+      wall_a: { status: 'accepted-measured', sources: [{ type: 'overview' }] },
+    },
+  };
+  const compiled = compileSceneV2(raw);
+  assert.equal(compiled.structures.length, 0);
+  assert.deepEqual(compiled.structureCandidates.map((value) => value.id), ['wall_a']);
+  assert.ok(compiled.pipeline.some((stage) => stage.status === 'REVIEW'));
+});
+
+test('compileSceneV2 keeps explicit presentation-layer inference visible', () => {
+  const raw = {
+    schemaVersion: '2.0', sceneLayer: 'presentation', dataset: 'presentation', coordinateFrame: {},
+    nodes: {
+      level_1: { id: 'level_1', type: 'level', parentId: null, children: ['wall_a'], height: 3 },
+      wall_a: { id: 'wall_a', type: 'wall', parentId: 'level_1', children: [], start: [0, 0], end: [4, 0], height: 3, thickness: 0.12 },
+    },
+    rootNodeIds: ['level_1'],
+    evidence: { wall_a: { status: 'accepted-inferred', reason: 'presentation-only completion' } },
+  };
+  const compiled = compileSceneV2(raw);
+  assert.ok(compiled.structures.length > 0);
+  assert.equal(compiled.structureCandidates.length, 0);
 });
 
 test('compileSceneV2 keeps an all-rejected scene under review', () => {

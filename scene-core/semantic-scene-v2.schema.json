@@ -59,6 +59,10 @@
         "pipeline": {"type": "array", "items": {"type": "object"}},
         "photos": {"type": "array"},
         "cameraPath": {"type": "array"},
+        "executions": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/executionIdentity"}
+        },
         "artifacts": {"type": "object"},
         "focusEnvelope": {"type": "object"}
       }
@@ -106,6 +110,8 @@
       "properties": {
         "createdBy": {"type": "string"},
         "createdAt": {"type": "string"},
+        "createdRunId": {"type": "string"},
+        "createdIdentityDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "note": {"type": "string"}
       }
     },
@@ -268,6 +274,46 @@
         {"$ref": "#/$defs/guideNode"}
       ]
     },
+    "executionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "actorId", "runId", "role", "provider", "model",
+        "policyId", "toolPolicyHash", "startedAt", "attestation"
+      ],
+      "properties": {
+        "schemaVersion": {"const": "1.0"},
+        "actorId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$"},
+        "runId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "role": {"enum": ["author", "reviewer", "deterministic-checker", "publisher"]},
+        "reviewerClass": {"enum": ["standard", "regional", "adversarial", "deterministic"]},
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "policyId": {"type": "string", "minLength": 1},
+        "toolPolicyHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "startedAt": {"type": "string", "format": "date-time"},
+        "attestation": {
+          "type": "object",
+          "required": ["issuer", "enforcementMode"],
+          "properties": {
+            "issuer": {"type": "string", "minLength": 1},
+            "enforcementMode": {"enum": ["application-enforced", "sandbox-enforced", "deterministic-local"]},
+            "receiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "deterministicBinding": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"role": {"enum": ["reviewer", "deterministic-checker"]}}},
+          "then": {"required": ["reviewerClass"]}
+        },
+        {
+          "if": {"properties": {"role": {"const": "deterministic-checker"}}},
+          "then": {"required": ["deterministicBinding"]}
+        }
+      ]
+    },
     "evidenceSource": {
       "type": "object",
       "required": ["type"],
@@ -281,6 +327,15 @@
         },
         "path": {"type": "string"},
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sourceRole": {"type": "string", "minLength": 1},
+        "contentSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "lineageId": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rootContentSha256s": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "producer": {"type": ["string", "object"]},
+        "provenanceReceipt": {"type": "object"},
         "note": {"type": "string"}
       }
     },
@@ -290,11 +345,29 @@
       "properties": {
         "status": {"enum": ["candidate", "accepted-measured", "accepted-inferred", "rejected"]},
         "sources": {"type": "array", "items": {"$ref": "#/$defs/evidenceSource"}},
-        "reviewer": {"type": "string"},
+        "reviewer": {"$ref": "#/$defs/executionIdentity"},
         "reason": {"type": "string"},
         "acceptedAt": {"type": "string"},
+        "claimSnapshot": {"type": "object"},
+        "claimHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "acceptedSourceDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "legacyDisposition": {"enum": ["accepted-measured", "accepted-inferred", "rejected"]},
         "gates": {"type": "object"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["accepted-measured", "accepted-inferred"]}}},
+          "then": {"required": ["sources", "reviewer", "acceptedAt", "claimSnapshot", "claimHash", "acceptedSourceDigest"]}
+        },
+        {
+          "if": {"properties": {"status": {"const": "accepted-inferred"}}},
+          "then": {"required": ["reason"]}
+        },
+        {
+          "if": {"properties": {"status": {"const": "rejected"}}},
+          "then": {"required": ["reason"]}
+        }
+      ]
     },
     "issue": {
       "type": "object",
@@ -306,6 +379,7 @@
         "targetNodeIds": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
         "openedBy": {"type": "string"},
+        "openedByRunId": {"type": "string"},
         "openedAt": {"type": "string"},
         "kind": {"type": "string"},
         "area": {"type": "string"},
@@ -314,7 +388,7 @@
           "required": ["previousStatus", "reviewer", "reason", "resolvedAt", "receipt"],
           "properties": {
             "previousStatus": {"enum": ["OPEN", "PATCHED", "FAIL"]},
-            "reviewer": {"type": "string", "pattern": "^[a-z0-9._-]{3,64}$"},
+            "reviewer": {"$ref": "#/$defs/executionIdentity"},
             "reason": {"type": "string", "minLength": 1},
             "resolvedAt": {"type": "string"},
             "receipt": {

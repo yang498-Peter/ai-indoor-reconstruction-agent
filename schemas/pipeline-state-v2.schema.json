@@ -7,7 +7,7 @@
   "required": [
     "schemaVersion", "pipelineContractDigest", "jobId", "captureFingerprint",
     "job", "jobSha256", "createdAt", "revision", "stageOrder", "stages",
-    "capabilities", "issues", "currentSceneSha256", "lastCheckpoint", "events"
+    "capabilities", "executions", "issues", "currentSceneSha256", "lastCheckpoint", "events"
   ],
   "properties": {
     "schemaVersion": {"const": 2},
@@ -49,6 +49,18 @@
       }
     },
     "capabilities": {"type": "object", "additionalProperties": {"type": "object"}},
+    "executions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["identity", "identityDigest"],
+        "properties": {
+          "identity": {"$ref": "./execution-identity-v1.schema.json"},
+          "identityDigest": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
     "issues": {"type": "array", "items": {"type": "object"}},
     "currentSceneSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
     "currentScenePath": {"type": "string", "minLength": 1},
@@ -70,7 +82,7 @@
       "additionalProperties": false,
       "required": [
         "status", "attempt", "updatedAt", "actor", "note", "artifacts",
-        "sceneSha256", "evaluator", "evaluation"
+        "sceneSha256", "evaluator", "evaluation", "executionRunId", "identityDigest"
       ],
       "properties": {
         "status": {"enum": ["PENDING", "IN_PROGRESS", "REVIEW", "PASS", "BLOCKED", "FAILED"]},
@@ -81,7 +93,9 @@
         "artifacts": {"type": "array", "items": {"type": "object"}},
         "sceneSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "evaluator": {"type": "string", "minLength": 1},
-        "evaluation": {"type": ["object", "null"]}
+        "evaluation": {"type": ["object", "null"]},
+        "executionRunId": {"type": ["string", "null"]},
+        "identityDigest": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
       }
     },
     "event": {
