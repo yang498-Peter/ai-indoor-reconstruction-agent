@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/pipeline-contract-v2.schema.json",
+  "title": "Indoor reconstruction pipeline contract V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "artifactType", "stateSchemaVersion", "stages", "changeInvalidation"],
+  "properties": {
+    "$schema": {"type": "string", "minLength": 1},
+    "schemaVersion": {"const": "2.0"},
+    "artifactType": {"const": "pipeline-contract-v2"},
+    "stateSchemaVersion": {"const": 2},
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/stage"}
+    },
+    "changeInvalidation": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/invalidation"}
+    }
+  },
+  "$defs": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "dependsOn", "requiredCapabilities", "requiredArtifacts", "requiredArtifactChecks", "sceneBinding", "blocksOnOpenIssues", "evaluator"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "dependsOn": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/name"}},
+        "requiredCapabilities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/name"}},
+        "requiredArtifacts": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/name"}},
+        "requiredArtifactChecks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/name"}
+          }
+        },
+        "sceneBinding": {"enum": ["none", "authority"]},
+        "blocksOnOpenIssues": {"type": "boolean"},
+        "evaluator": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}
+      }
+    },
+    "invalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewStage", "pendingStages"],
+      "properties": {
+        "reviewStage": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]},
+        "pendingStages": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/name"}}
+      }
+    }
+  }
+}

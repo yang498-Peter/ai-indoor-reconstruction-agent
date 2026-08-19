@@ -97,12 +97,31 @@ python scene-core\migrate_scene_v1_to_v2.py --input old\scene.json --output work
 
 # 测试
 python tests\scene-v2\test_scene_api.py
+python tests\contracts\test_stage_contract.py
 python tests\contracts\test_v2_publish_contract.py
 node --test tests\scene-v2\scene-core.test.mjs
 python scripts\validate_portable_repo.py
 ```
 
 样例场景所有接受节点引用 `synthetic-sample` 类型回执——明确标记为演示，不冒充实测。
+
+## 九阶段 Pipeline V2
+
+`schemas/pipeline-contract-v2.json` 是阶段顺序、依赖、能力、typed artifact、专用 evaluator 和失效传播的唯一机器契约：
+
+`intake → evidence → macro-hypothesis → seed → author → presentation-review → regional-review → global-review → publish`
+
+- `stage` 只能记录 `IN_PROGRESS`、`REVIEW`、`BLOCKED` 或 `FAILED`，不能直接写 `PASS`；
+- `evaluate-stage` 根据契约逐项验证当前 typed artifact、payload 检查向量、producer/config/environment/input hash 和 authority SHA；
+- V1 状态稳定返回 `PIPELINE_STATE_MIGRATION_REQUIRED`，必须执行 `migrate-state`；迁移仅保留 capture/job 绑定及 intake 结论，下游全部重新评估；
+- authority 变化会失效 author 之后的三层 review 与 publish；presentation-only/renderer-only 变化不会倒灌失效 evidence、macro、seed 或 authority；
+- 状态写入使用独占锁、revision compare-and-swap 和原子替换；并发旧写者返回 `STATE_REVISION_CONFLICT`。
+
+```powershell
+python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py migrate-state --state work\pipeline-state.json --actor migration-owner
+python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py evaluate-stage --state work\pipeline-state.json --actor evidence-owner --name evidence --artifact evidence-bundle=work\evidence-bundle.json
+python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py status --state work\pipeline-state.json
+```
 
 ## V2 评估与发布
 

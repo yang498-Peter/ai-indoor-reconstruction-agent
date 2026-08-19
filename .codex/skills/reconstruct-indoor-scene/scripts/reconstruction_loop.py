@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -18,22 +19,15 @@ import unicodedata
 from typing import Any
 
 
-STAGE_ORDER = (
-    "intake",
-    "evidence",
-    "seed",
-    "author",
-    "regional-review",
-    "global-review",
-    "publish",
-)
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+PIPELINE_CONTRACT_PATH = REPOSITORY_ROOT / "schemas" / "pipeline-contract-v2.json"
+PIPELINE_CONTRACT = json.loads(PIPELINE_CONTRACT_PATH.read_text(encoding="utf-8"))
+PIPELINE_CONTRACT_DIGEST = hashlib.sha256(PIPELINE_CONTRACT_PATH.read_bytes()).hexdigest()
+STAGE_ORDER = tuple(stage["name"] for stage in PIPELINE_CONTRACT["stages"])
+STAGE_SPECS = {stage["name"]: stage for stage in PIPELINE_CONTRACT["stages"]}
 STAGE_REQUIREMENTS = {
-    "evidence": ("point-cloud-sections",),
-    "seed": ("semantic-scene-compiler",),
-    "author": ("semantic-edit", "deterministic-render"),
-    "regional-review": ("deterministic-render", "visual-inspection"),
-    "global-review": ("visual-inspection", "topology-check", "overlap-check"),
-    "publish": ("score-gate",),
+    stage["name"]: tuple(stage["requiredCapabilities"])
+    for stage in PIPELINE_CONTRACT["stages"]
 }
 STAGE_STATES = {"PENDING", "IN_PROGRESS", "REVIEW", "PASS", "BLOCKED", "FAILED"}
 CAPABILITY_STATES = {"UNVERIFIED", "AVAILABLE", "DEGRADED", "BLOCKED"}
@@ -44,7 +38,74 @@ EVIDENCE_ROLES = {
 
 
 class WorkflowError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        code: str = "WORKFLOW_ERROR",
+        next_actions: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.next_actions = list(next_actions or [])
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "nextActions": self.next_actions,
+        }
+
+
+def validate_pipeline_contract() -> None:
+    if (
+        PIPELINE_CONTRACT.get("schemaVersion") != "2.0"
+        or PIPELINE_CONTRACT.get("artifactType") != "pipeline-contract-v2"
+        or PIPELINE_CONTRACT.get("stateSchemaVersion") != 2
+    ):
+        raise WorkflowError(
+            "pipeline contract identity is invalid",
+            "PIPELINE_CONTRACT_INVALID",
+        )
+    if not STAGE_ORDER or len(set(STAGE_ORDER)) != len(STAGE_ORDER):
+        raise WorkflowError(
+            "pipeline contract stage names must be unique",
+            "PIPELINE_CONTRACT_INVALID",
+        )
+    seen: set[str] = set()
+    for stage in PIPELINE_CONTRACT.get("stages", []):
+        required = {
+            "name",
+            "dependsOn",
+            "requiredCapabilities",
+            "requiredArtifacts",
+            "requiredArtifactChecks",
+            "sceneBinding",
+            "blocksOnOpenIssues",
+            "evaluator",
+        }
+        if (
+            set(stage) != required
+            or any(name not in seen for name in stage["dependsOn"])
+            or set(stage["requiredArtifactChecks"]) != set(stage["requiredArtifacts"])
+        ):
+            raise WorkflowError(
+                "pipeline stages must have exact fields and depend only on earlier stages",
+                "PIPELINE_CONTRACT_INVALID",
+            )
+        seen.add(stage["name"])
+    for change in PIPELINE_CONTRACT.get("changeInvalidation", {}).values():
+        names = list(change.get("pendingStages", []))
+        if change.get("reviewStage") is not None:
+            names.append(change["reviewStage"])
+        if any(name not in STAGE_SPECS for name in names):
+            raise WorkflowError(
+                "pipeline invalidation references an unknown stage",
+                "PIPELINE_CONTRACT_INVALID",
+            )
+
+
+validate_pipeline_contract()
 
 
 def now_iso() -> str:
@@ -132,8 +193,48 @@ def run_probe(command: list[str], evidence_paths: list[Path], cwd: Path) -> None
 def write_json_atomic(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
     temporary.replace(path)
+
+
+@contextmanager
+def state_write_lock(path: Path):
+    lock_path = path.resolve().with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as error:
+        raise WorkflowError(
+            f"pipeline state is locked by another writer: {lock_path}",
+            "STATE_BUSY",
+            ["retry after the active state mutation finishes"],
+        ) from error
+    try:
+        os.write(descriptor, f"pid={os.getpid()} at={now_iso()}\n".encode("utf-8"))
+        os.close(descriptor)
+        descriptor = -1
+        yield
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -199,6 +300,20 @@ def initial_capabilities(job: dict[str, Any], job_path: Path) -> dict[str, dict[
     return capabilities
 
 
+def blank_stage(stage_name: str) -> dict[str, Any]:
+    return {
+        "status": "PENDING",
+        "attempt": 0,
+        "updatedAt": None,
+        "actor": None,
+        "note": "",
+        "artifacts": [],
+        "sceneSha256": None,
+        "evaluator": STAGE_SPECS[stage_name]["evaluator"],
+        "evaluation": None,
+    }
+
+
 def initialize_workflow(job_path: Path, state_path: Path) -> dict[str, Any]:
     job_path = job_path.resolve()
     state_path = state_path.resolve()
@@ -215,18 +330,7 @@ def initialize_workflow(job_path: Path, state_path: Path) -> dict[str, Any]:
             raise WorkflowError("existing pipeline state is bound to a different or modified job")
         return existing
     ready = str(job.get("state", "")) in {"READY_FULL", "READY_GEOMETRY_ONLY"}
-    stages = {
-        name: {
-            "status": "PENDING",
-            "attempt": 0,
-            "updatedAt": None,
-            "actor": None,
-            "note": "",
-            "artifacts": [],
-            "sceneSha256": None,
-        }
-        for name in STAGE_ORDER
-    }
+    stages = {name: blank_stage(name) for name in STAGE_ORDER}
     stages["intake"].update(
         {
             "status": "PASS" if ready else "BLOCKED",
@@ -235,10 +339,17 @@ def initialize_workflow(job_path: Path, state_path: Path) -> dict[str, Any]:
             "actor": "init_reconstruction_job",
             "note": str(job.get("state", "BLOCKED_INVALID_JOB")),
             "artifacts": [artifact(job_path, "tool")],
+            "evaluation": {
+                "evaluator": "initialize_intake",
+                "evaluatorCodeSha256": sha256_file(Path(__file__)),
+                "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
+                "result": "PASS" if ready else "BLOCKED",
+            },
         }
     )
     state = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
+        "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
         "jobId": job.get("jobId"),
         "captureFingerprint": job.get("captureFingerprint"),
         "job": str(job_path),
@@ -254,14 +365,36 @@ def initialize_workflow(job_path: Path, state_path: Path) -> dict[str, Any]:
         "events": [],
     }
     event(state, "init_reconstruction_job", "initialize", {"jobState": job.get("state")})
-    write_json_atomic(state_path, state)
+    with state_write_lock(state_path):
+        if state_path.exists():
+            raise WorkflowError(
+                "pipeline state was created concurrently",
+                "STATE_REVISION_CONFLICT",
+                ["read the existing pipeline state before retrying initialization"],
+            )
+        write_json_atomic(state_path, state)
     return state
 
 
 def read_state(path: Path) -> dict[str, Any]:
     state = load_json(path)
-    if state.get("schemaVersion") != 1 or state.get("stageOrder") != list(STAGE_ORDER):
-        raise WorkflowError("unsupported or invalid pipeline state")
+    if state.get("schemaVersion") == 1:
+        raise WorkflowError(
+            "pipeline state V1 must be migrated explicitly before use",
+            "PIPELINE_STATE_MIGRATION_REQUIRED",
+            [f"python {Path(__file__).name} migrate-state --state {path} --actor <migration-actor>"],
+        )
+    if state.get("schemaVersion") != 2 or state.get("stageOrder") != list(STAGE_ORDER):
+        raise WorkflowError(
+            "unsupported or invalid pipeline state",
+            "PIPELINE_STATE_INVALID",
+        )
+    if state.get("pipelineContractDigest") != PIPELINE_CONTRACT_DIGEST:
+        raise WorkflowError(
+            "pipeline state was created for a different pipeline contract",
+            "PIPELINE_CONTRACT_CHANGED_MIGRATION_REQUIRED",
+            [f"python {Path(__file__).name} migrate-state --state {path} --actor <migration-actor>"],
+        )
     job_path = Path(str(state.get("job", ""))).resolve()
     if (
         not job_path.is_file()
@@ -273,24 +406,137 @@ def read_state(path: Path) -> dict[str, Any]:
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
-    write_json_atomic(path.resolve(), state)
+    path = path.resolve()
+    expected_revision = int(state.get("revision", -1)) - 1
+    with state_write_lock(path):
+        current = load_json(path)
+        current_revision = int(current.get("revision", -1))
+        if current_revision != expected_revision:
+            raise WorkflowError(
+                f"pipeline state revision changed from {expected_revision} to {current_revision}",
+                "STATE_REVISION_CONFLICT",
+                ["reload pipeline-state.json and retry the mutation"],
+            )
+        write_json_atomic(path, state)
+
+
+def command_migrate_state(args: argparse.Namespace) -> None:
+    actor_key(args.actor)
+    path = args.state.resolve()
+    legacy = load_json(path)
+    source_version = legacy.get("schemaVersion")
+    if source_version == 2 and legacy.get("pipelineContractDigest") == PIPELINE_CONTRACT_DIGEST:
+        raise WorkflowError(
+            "pipeline state already uses the current V2 contract",
+            "PIPELINE_STATE_ALREADY_CURRENT",
+        )
+    if source_version not in {1, 2}:
+        raise WorkflowError(
+            "only pipeline state V1 or an older V2 contract can be migrated",
+            "PIPELINE_STATE_MIGRATION_UNSUPPORTED",
+        )
+    job_path = Path(str(legacy.get("job", ""))).resolve()
+    if (
+        not job_path.is_file()
+        or sha256_file(job_path) != legacy.get("jobSha256")
+        or load_json(job_path).get("captureFingerprint") != legacy.get("captureFingerprint")
+    ):
+        raise WorkflowError(
+            "pipeline job binding is missing, modified, or belongs to another capture",
+            "PIPELINE_JOB_BINDING_INVALID",
+        )
+
+    migrated_stages = {name: blank_stage(name) for name in STAGE_ORDER}
+    source_stages = legacy.get("stages", {})
+    intake = source_stages.get("intake") if isinstance(source_stages, dict) else None
+    if isinstance(intake, dict) and intake.get("status") in {"PASS", "BLOCKED"}:
+        migrated_stages["intake"].update(
+            {
+                "status": intake["status"],
+                "attempt": int(intake.get("attempt", 0)),
+                "updatedAt": intake.get("updatedAt"),
+                "actor": intake.get("actor"),
+                "note": f"migrated intake only; downstream artifacts require V2 reevaluation: {intake.get('note', '')}",
+                "artifacts": list(intake.get("artifacts", [])),
+                "evaluation": {
+                    "evaluator": "initialize_intake",
+                    "evaluatorCodeSha256": sha256_file(Path(__file__)),
+                    "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
+                    "result": intake["status"],
+                    "migratedFromSchemaVersion": source_version,
+                },
+            }
+        )
+
+    migrated = dict(legacy)
+    migrated.update(
+        {
+            "schemaVersion": 2,
+            "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
+            "stageOrder": list(STAGE_ORDER),
+            "stages": migrated_stages,
+        }
+    )
+    event(
+        migrated,
+        args.actor,
+        "migrate-state",
+        {
+            "fromSchemaVersion": source_version,
+            "toSchemaVersion": 2,
+            "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
+            "downstreamDisposition": "PENDING_REEVALUATION",
+        },
+    )
+    save_state(path, migrated)
+
+
+def dependent_stages(stage_name: str) -> list[str]:
+    dependents: list[str] = []
+    frontier = [stage_name]
+    while frontier:
+        parent = frontier.pop(0)
+        for name in STAGE_ORDER:
+            if name not in dependents and parent in STAGE_SPECS[name]["dependsOn"]:
+                dependents.append(name)
+                frontier.append(name)
+    return dependents
+
+
+def reset_stage(state: dict[str, Any], stage_name: str, status: str, reason: str) -> None:
+    stage = state["stages"][stage_name]
+    stage.update(
+        {
+            "status": status,
+            "updatedAt": now_iso(),
+            "actor": "pipeline",
+            "note": f"invalidated: {reason}",
+            "artifacts": [],
+            "sceneSha256": None,
+            "evaluation": None,
+        }
+    )
 
 
 def invalidate_after(state: dict[str, Any], stage_name: str, reason: str) -> None:
-    index = STAGE_ORDER.index(stage_name)
-    for later_name in STAGE_ORDER[index + 1 :]:
+    for later_name in dependent_stages(stage_name):
         later = state["stages"][later_name]
         if later["status"] != "PENDING":
-            later.update(
-                {
-                    "status": "PENDING",
-                    "updatedAt": now_iso(),
-                    "actor": "pipeline",
-                    "note": f"invalidated: {reason}",
-                    "artifacts": [],
-                    "sceneSha256": None,
-                }
-            )
+            reset_stage(state, later_name, "PENDING", reason)
+
+
+def apply_change_invalidation(state: dict[str, Any], change: str, reason: str) -> None:
+    rule = PIPELINE_CONTRACT.get("changeInvalidation", {}).get(change)
+    if not isinstance(rule, dict):
+        raise WorkflowError(
+            f"unsupported pipeline change kind: {change}",
+            "INVALIDATION_KIND_UNKNOWN",
+        )
+    review_stage = rule.get("reviewStage")
+    if isinstance(review_stage, str):
+        reset_stage(state, review_stage, "REVIEW", reason)
+    for name in rule.get("pendingStages", []):
+        reset_stage(state, name, "PENDING", reason)
 
 
 def require_capabilities(state: dict[str, Any], stage_name: str) -> None:
@@ -304,13 +550,24 @@ def require_capabilities(state: dict[str, Any], stage_name: str) -> None:
 
 
 def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
-    index = STAGE_ORDER.index(stage_name)
+    current_code_sha = sha256_file(Path(__file__))
     missing = [
-        name for name in STAGE_ORDER[:index]
-        if state["stages"][name]["status"] != "PASS"
+        name for name in STAGE_SPECS[stage_name]["dependsOn"]
+        if (
+            state["stages"][name]["status"] != "PASS"
+            or not isinstance(state["stages"][name].get("evaluation"), dict)
+            or state["stages"][name]["evaluation"].get("pipelineContractDigest")
+            != PIPELINE_CONTRACT_DIGEST
+            or state["stages"][name]["evaluation"].get("evaluatorCodeSha256")
+            != current_code_sha
+        )
     ]
     if missing:
-        raise WorkflowError(f"stage {stage_name} has incomplete prerequisites: {', '.join(missing)}")
+        raise WorkflowError(
+            f"stage {stage_name} has incomplete or stale prerequisites: {', '.join(missing)}",
+            "STAGE_PREREQUISITE_INCOMPLETE_OR_STALE",
+            [f"reevaluate prerequisite stage {name}" for name in missing],
+        )
 
 
 def open_issues(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -336,6 +593,253 @@ def scene_artifact(path: Path) -> dict[str, str]:
     if not isinstance(value, dict):
         raise WorkflowError("semantic scene must be a JSON object")
     return artifact(path, "tool")
+
+
+def validate_scene_authority(path: Path, state: dict[str, Any]) -> dict[str, str]:
+    value = load_json(path)
+    if not isinstance(value, dict) or value.get("schemaVersion") != "2.0":
+        raise WorkflowError(
+            "stage evaluator requires a Semantic Scene V2 authority artifact",
+            "STAGE_SCENE_V2_REQUIRED",
+            ["migrate the scene explicitly before evaluating the stage"],
+        )
+    item = artifact(path, "tool")
+    item["artifactType"] = "scene-authority"
+    return item
+
+
+def validate_typed_artifact(
+    path: Path,
+    expected_type: str,
+    state: dict[str, Any],
+    scene_sha: str | None,
+) -> dict[str, str]:
+    if expected_type == "scene-authority":
+        return validate_scene_authority(path, state)
+    value = load_json(path)
+    required_fields = {
+        "schemaVersion",
+        "artifactType",
+        "jobId",
+        "captureFingerprint",
+        "payloadDigest",
+        "producer",
+        "inputs",
+        "createdAt",
+        "payload",
+    }
+    producer_fields = {
+        "name",
+        "version",
+        "gitSha",
+        "command",
+        "configDigest",
+        "environmentDigest",
+        "randomSeed",
+    }
+    producer = value.get("producer") if isinstance(value, dict) else None
+    created_at = parse_time(value.get("createdAt")) if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or set(value) != required_fields
+        or value.get("schemaVersion") != "1.0"
+        or value.get("artifactType") != expected_type
+        or value.get("jobId") != state.get("jobId")
+        or value.get("captureFingerprint") != state.get("captureFingerprint")
+        or value.get("payloadDigest") != canonical_digest(value.get("payload"))
+        or not isinstance(producer, dict)
+        or set(producer) != producer_fields
+        or not re.fullmatch(r"[0-9a-f]{40}", str(producer.get("gitSha", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(producer.get("configDigest", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(producer.get("environmentDigest", "")))
+        or not isinstance(producer.get("name"), str)
+        or not producer["name"].strip()
+        or not isinstance(producer.get("version"), str)
+        or not producer["version"].strip()
+        or not isinstance(producer.get("command"), list)
+        or not producer["command"]
+        or any(not isinstance(part, str) or not part for part in producer["command"])
+        or not isinstance(producer.get("randomSeed"), int)
+        or created_at is None
+        or created_at > datetime.now(timezone.utc)
+        or not isinstance(value.get("inputs"), list)
+    ):
+        raise WorkflowError(
+            f"typed artifact {expected_type} is invalid or belongs to another job",
+            "TYPED_ARTIFACT_INVALID",
+            [f"regenerate {expected_type} with the pipeline artifact V1 envelope"],
+        )
+    inputs = value["inputs"]
+    if any(
+        not isinstance(item, dict)
+        or set(item) != {"artifactType", "artifactSha256"}
+        or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("artifactSha256", "")))
+        for item in inputs
+    ):
+        raise WorkflowError(
+            f"typed artifact {expected_type} has invalid input bindings",
+            "TYPED_ARTIFACT_INPUT_INVALID",
+        )
+    if scene_sha and not any(
+        item.get("artifactType") == "scene-authority"
+        and item.get("artifactSha256") == scene_sha
+        for item in inputs
+    ):
+        raise WorkflowError(
+            f"typed artifact {expected_type} is stale for the current scene authority",
+            "TYPED_ARTIFACT_SCENE_BINDING_STALE",
+            [f"regenerate {expected_type} from the current scene authority"],
+        )
+    item = artifact(path, "tool")
+    item["artifactType"] = expected_type
+    item["payloadDigest"] = value["payloadDigest"]
+    return item
+
+
+def parse_stage_artifacts(
+    values: list[str],
+    state: dict[str, Any],
+    stage_spec: dict[str, Any],
+    scene_path: Path | None,
+    scene_sha: str | None,
+) -> list[dict[str, str]]:
+    declared: dict[str, Path] = {}
+    for value in values:
+        if "=" not in value:
+            raise WorkflowError(
+                "stage artifact must use artifactType=path",
+                "TYPED_ARTIFACT_SYNTAX_INVALID",
+            )
+        artifact_type, raw_path = value.split("=", 1)
+        artifact_type = artifact_type.strip()
+        if artifact_type in declared:
+            raise WorkflowError(
+                f"stage artifact type is duplicated: {artifact_type}",
+                "TYPED_ARTIFACT_DUPLICATE",
+            )
+        declared[artifact_type] = Path(raw_path)
+    if scene_path is not None and "scene-authority" in stage_spec["requiredArtifacts"]:
+        declared.setdefault("scene-authority", scene_path)
+    missing = [
+        name for name in stage_spec["requiredArtifacts"] if name not in declared
+    ]
+    if missing:
+        raise WorkflowError(
+            f"stage {stage_spec['name']} lacks required typed artifacts: {', '.join(missing)}",
+            "STAGE_ARTIFACT_MISSING",
+            [
+                f"rerun evaluate-stage with "
+                + " ".join(f"--artifact {name}=<path>" for name in missing)
+            ],
+        )
+    unexpected = [name for name in declared if name not in stage_spec["requiredArtifacts"]]
+    if unexpected:
+        raise WorkflowError(
+            f"stage {stage_spec['name']} received unexpected artifacts: {', '.join(unexpected)}",
+            "STAGE_ARTIFACT_UNEXPECTED",
+        )
+    return [
+        validate_typed_artifact(
+            declared[name],
+            name,
+            state,
+            scene_sha if stage_spec["sceneBinding"] == "authority" and name != "scene-authority" else None,
+        )
+        for name in stage_spec["requiredArtifacts"]
+    ]
+
+
+def evaluate_required_artifact_checks(context: dict[str, Any]) -> dict[str, list[str]]:
+    passed: dict[str, list[str]] = {}
+    for item in context["artifacts"]:
+        artifact_type = item["artifactType"]
+        required_checks = context["stage"]["requiredArtifactChecks"].get(
+            artifact_type, []
+        )
+        if not required_checks:
+            passed[artifact_type] = []
+            continue
+        value = load_json(Path(item["path"]))
+        payload = value.get("payload") if isinstance(value, dict) else None
+        checks = payload.get("checks") if isinstance(payload, dict) else None
+        failed = [
+            name
+            for name in required_checks
+            if not isinstance(checks, dict) or checks.get(name) is not True
+        ]
+        if not isinstance(payload, dict) or payload.get("status") != "PASS" or failed:
+            raise WorkflowError(
+                f"typed artifact {artifact_type} did not pass required checks: "
+                + ", ".join(failed or ["status"]),
+                "STAGE_ARTIFACT_CHECK_FAILED",
+                [f"regenerate {artifact_type} after resolving every required check"],
+            )
+        passed[artifact_type] = list(required_checks)
+    return passed
+
+
+def evaluate_evidence(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "typedEvidenceBundle": True,
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+def evaluate_macro_hypothesis(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "typedMacroHypothesis": True,
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+def evaluate_seed(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sceneSchemaVersion": "2.0",
+        "checkpointRequired": True,
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+def evaluate_author(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "unresolvedIssueCount": len(open_issues(context["state"])),
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+def evaluate_presentation_review(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "authorityBoundPresentation": True,
+        "independentReview": True,
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+def evaluate_regional_review(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "authorityBoundRegionalReview": True,
+        "omissionAuditPresent": True,
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+def evaluate_global_review(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "authorityBoundGlobalReview": True,
+        "independentReview": True,
+        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+    }
+
+
+STAGE_EVALUATORS = {
+    "evaluate_evidence": evaluate_evidence,
+    "evaluate_macro_hypothesis": evaluate_macro_hypothesis,
+    "evaluate_seed": evaluate_seed,
+    "evaluate_author": evaluate_author,
+    "evaluate_presentation_review": evaluate_presentation_review,
+    "evaluate_regional_review": evaluate_regional_review,
+    "evaluate_global_review": evaluate_global_review,
+}
 
 
 def save_checkpoint(state_path: Path, scene_path: Path, label: str) -> dict[str, str]:
@@ -400,22 +904,144 @@ def command_capability(args: argparse.Namespace) -> None:
     save_state(args.state, state)
 
 
+def command_evaluate_stage(args: argparse.Namespace) -> None:
+    state = read_state(args.state)
+    actor_key(args.actor)
+    if args.name in {"intake", "publish"}:
+        raise WorkflowError(
+            f"stage {args.name} is owned by its dedicated pipeline command",
+            "DEDICATED_STAGE_COMMAND_REQUIRED",
+            ["use init for intake" if args.name == "intake" else "use publish for publication"],
+        )
+    stage_spec = STAGE_SPECS[args.name]
+    scene_path = args.scene.resolve() if args.scene else None
+    scene_item = validate_scene_authority(scene_path, state) if scene_path else None
+    scene_sha = scene_item["sha256"] if scene_item else None
+    artifacts = parse_stage_artifacts(
+        args.artifact,
+        state,
+        stage_spec,
+        scene_path,
+        scene_sha,
+    )
+    require_prerequisites(state, args.name)
+    require_capabilities(state, args.name)
+    if stage_spec["sceneBinding"] == "authority" and scene_item is None:
+        raise WorkflowError(
+            f"stage {args.name} requires --scene bound to Semantic Scene V2 authority",
+            "STAGE_SCENE_REQUIRED",
+        )
+    if (
+        scene_sha
+        and args.name != "seed"
+        and state.get("currentSceneSha256") != scene_sha
+    ):
+        raise WorkflowError(
+            "stage scene differs from the latest authority checkpoint",
+            "STAGE_SCENE_STALE",
+            ["patch or seed the current authority before evaluating this stage"],
+        )
+    if stage_spec["blocksOnOpenIssues"] and open_issues(state):
+        raise WorkflowError(
+            f"stage {args.name} cannot pass with unresolved issues",
+            "STAGE_BLOCKED_BY_OPEN_ISSUES",
+        )
+    if args.name in {"presentation-review", "regional-review", "global-review"}:
+        author_actor = state["stages"]["author"].get("actor")
+        if author_actor and actor_key(args.actor) == actor_key(author_actor):
+            raise WorkflowError(
+                f"stage {args.name} evaluator must differ from the author stage actor",
+                "STAGE_REVIEWER_NOT_INDEPENDENT",
+            )
+
+    evaluator_name = stage_spec["evaluator"]
+    evaluator = STAGE_EVALUATORS.get(evaluator_name)
+    if evaluator is None:
+        raise WorkflowError(
+            f"no dedicated evaluator is registered for stage {args.name}",
+            "STAGE_EVALUATOR_MISSING",
+        )
+    checks = evaluator(
+        {
+            "state": state,
+            "stage": stage_spec,
+            "artifacts": artifacts,
+            "scene": scene_item,
+            "actor": args.actor,
+        }
+    )
+    artifact_set_digest = canonical_digest(
+        sorted(
+            (
+                item["artifactType"],
+                item["sha256"],
+                item.get("payloadDigest", ""),
+            )
+            for item in artifacts
+        )
+    )
+    current = state["stages"][args.name]
+    previous_evaluation = current.get("evaluation") or {}
+    if (
+        current.get("status") == "PASS"
+        and previous_evaluation.get("artifactSetDigest") != artifact_set_digest
+    ):
+        invalidate_after(state, args.name, f"{args.name} artifact set changed")
+    if args.name == "seed":
+        checkpoint = save_checkpoint(args.state, scene_path, "seed")
+        artifacts.append(checkpoint | {"artifactType": "scene-authority-checkpoint"})
+        state["currentSceneSha256"] = scene_sha
+        state["currentScenePath"] = str(scene_path)
+        state["lastCheckpoint"] = checkpoint
+    evaluation = {
+        "evaluator": evaluator_name,
+        "evaluatorCodeSha256": sha256_file(Path(__file__)),
+        "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
+        "artifactSetDigest": artifact_set_digest,
+        "result": "PASS",
+        "checks": checks,
+        "evaluatedAt": now_iso(),
+    }
+    current.update(
+        {
+            "status": "PASS",
+            "attempt": int(current.get("attempt", 0)) + 1,
+            "updatedAt": now_iso(),
+            "actor": args.actor,
+            "note": args.note,
+            "artifacts": artifacts,
+            "sceneSha256": scene_sha,
+            "evaluation": evaluation,
+        }
+    )
+    event(
+        state,
+        args.actor,
+        "evaluate-stage",
+        {
+            "name": args.name,
+            "result": "PASS",
+            "sceneSha256": scene_sha,
+            "artifactSetDigest": artifact_set_digest,
+        },
+    )
+    save_state(args.state, state)
+
+
 def command_stage(args: argparse.Namespace) -> None:
     state = read_state(args.state)
     actor_key(args.actor)
     if args.name in {"intake", "publish"}:
         raise WorkflowError(f"{args.name} is owned by its dedicated pipeline command")
     if args.status == "PASS":
-        require_prerequisites(state, args.name)
-        require_capabilities(state, args.name)
-        if args.name in {"seed", "author", "regional-review", "global-review"} and not args.scene:
-            raise WorkflowError(f"stage {args.name} PASS requires --scene")
-        if args.name in {"author", "regional-review", "global-review"} and open_issues(state):
-            raise WorkflowError(f"stage {args.name} cannot pass with unresolved issues")
-        if args.name in {"regional-review", "global-review"}:
-            author_actor = state["stages"]["author"].get("actor")
-            if author_actor and actor_key(args.actor) == actor_key(author_actor):
-                raise WorkflowError(f"stage {args.name} reviewer must differ from the author stage actor")
+        raise WorkflowError(
+            "generic stage command cannot write PASS; a dedicated evaluator must decide",
+            "GENERIC_STAGE_PASS_FORBIDDEN",
+            [
+                f"python {Path(__file__).name} evaluate-stage --state {args.state} "
+                f"--actor {args.actor} --name {args.name} --artifact <artifactType=path>"
+            ],
+        )
     artifacts = [artifact(Path(value)) for value in args.artifact]
     scene_sha = None
     if args.scene:
@@ -442,6 +1068,7 @@ def command_stage(args: argparse.Namespace) -> None:
             "note": args.note,
             "artifacts": artifacts,
             "sceneSha256": scene_sha,
+            "evaluation": None,
         }
     )
     if args.status != "PASS":
@@ -624,6 +1251,41 @@ def command_restore(args: argparse.Namespace) -> None:
     save_state(args.state, state)
 
 
+def command_invalidate(args: argparse.Namespace) -> None:
+    state = read_state(args.state)
+    actor_key(args.actor)
+    if not args.reason.strip():
+        raise WorkflowError(
+            "invalidation reason must not be empty",
+            "INVALIDATION_REASON_REQUIRED",
+        )
+    if args.change == "authority":
+        if not args.scene:
+            raise WorkflowError(
+                "authority invalidation requires the new --scene checkpoint",
+                "AUTHORITY_INVALIDATION_SCENE_REQUIRED",
+            )
+        scene = validate_scene_authority(args.scene.resolve(), state)
+        if scene["sha256"] == state.get("currentSceneSha256"):
+            raise WorkflowError(
+                "authority invalidation scene did not change",
+                "AUTHORITY_INVALIDATION_NO_CHANGE",
+            )
+        checkpoint = save_checkpoint(args.state, args.scene, "authority-change")
+        state["currentSceneSha256"] = scene["sha256"]
+        state["currentScenePath"] = str(args.scene.resolve())
+        state["lastCheckpoint"] = checkpoint
+        invalidate_resolved_issues(state, scene["sha256"], "")
+    apply_change_invalidation(state, args.change, args.reason.strip())
+    event(
+        state,
+        args.actor,
+        "invalidate",
+        {"change": args.change, "reason": args.reason.strip()},
+    )
+    save_state(args.state, state)
+
+
 def command_publish(args: argparse.Namespace) -> None:
     state = read_state(args.state)
     actor_key(args.actor)
@@ -728,6 +1390,13 @@ def command_publish(args: argparse.Namespace) -> None:
             "note": args.note,
             "artifacts": [artifact(publish_dir / "publish-manifest.json")],
             "sceneSha256": scene["sha256"],
+            "evaluation": {
+                "evaluator": STAGE_SPECS["publish"]["evaluator"],
+                "evaluatorCodeSha256": sha256_file(Path(__file__)),
+                "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
+                "result": "PASS",
+                "geometryDigest": geometry_digest,
+            },
         }
     )
     event(
@@ -783,8 +1452,34 @@ def command_status(args: argparse.Namespace) -> None:
         "strategyChangeRequired": [
             issue.get("id") for issue in state.get("issues", []) if issue.get("strategyChangeRequired")
         ],
+        "nextActions": next_actions(state, args.state),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def next_actions(state: dict[str, Any], state_path: Path) -> list[str]:
+    for name in STAGE_ORDER:
+        if state["stages"][name]["status"] == "PASS":
+            continue
+        if name == "intake":
+            return ["repair the reconstruction job and rerun init"]
+        if name == "publish":
+            return [
+                f"python {Path(__file__).name} publish --state {state_path} "
+                "--actor <publisher> --scene <scene-authority.json> --review <review-receipt.json> "
+                "--quality-report <quality-report.json> --output <publish-root>"
+            ]
+        required = " ".join(
+            f"--artifact {artifact_type}=<path>"
+            for artifact_type in STAGE_SPECS[name]["requiredArtifacts"]
+            if artifact_type != "scene-authority"
+        )
+        scene = " --scene <scene-authority.json>" if STAGE_SPECS[name]["sceneBinding"] == "authority" else ""
+        return [
+            f"python {Path(__file__).name} evaluate-stage --state {state_path} "
+            f"--actor <stage-actor> --name {name}{scene} {required}".strip()
+        ]
+    return []
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -794,6 +1489,10 @@ def build_parser() -> argparse.ArgumentParser:
     init = subparsers.add_parser("init")
     init.add_argument("--job", required=True, type=Path)
     init.add_argument("--state", required=True, type=Path)
+
+    migrate = subparsers.add_parser("migrate-state")
+    migrate.add_argument("--state", required=True, type=Path)
+    migrate.add_argument("--actor", required=True)
 
     status = subparsers.add_parser("status")
     status.add_argument("--state", required=True, type=Path)
@@ -811,10 +1510,18 @@ def build_parser() -> argparse.ArgumentParser:
     stage.add_argument("--state", required=True, type=Path)
     stage.add_argument("--actor", required=True)
     stage.add_argument("--name", required=True, choices=STAGE_ORDER)
-    stage.add_argument("--status", required=True, choices=sorted(STAGE_STATES))
+    stage.add_argument("--status", required=True, choices=sorted(STAGE_STATES - {"PASS"}))
     stage.add_argument("--artifact", action="append", default=[])
     stage.add_argument("--scene", type=Path)
     stage.add_argument("--note", default="")
+
+    evaluate = subparsers.add_parser("evaluate-stage")
+    evaluate.add_argument("--state", required=True, type=Path)
+    evaluate.add_argument("--actor", required=True)
+    evaluate.add_argument("--name", required=True, choices=STAGE_ORDER)
+    evaluate.add_argument("--artifact", action="append", default=[])
+    evaluate.add_argument("--scene", type=Path)
+    evaluate.add_argument("--note", default="")
 
     issue = subparsers.add_parser("open-issue")
     issue.add_argument("--state", required=True, type=Path)
@@ -850,6 +1557,17 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--actor", required=True)
     restore.add_argument("--scene", required=True, type=Path)
 
+    invalidate = subparsers.add_parser("invalidate")
+    invalidate.add_argument("--state", required=True, type=Path)
+    invalidate.add_argument("--actor", required=True)
+    invalidate.add_argument(
+        "--change",
+        required=True,
+        choices=sorted(PIPELINE_CONTRACT["changeInvalidation"]),
+    )
+    invalidate.add_argument("--reason", required=True)
+    invalidate.add_argument("--scene", type=Path)
+
     publish = subparsers.add_parser("publish")
     publish.add_argument("--state", required=True, type=Path)
     publish.add_argument("--actor", required=True)
@@ -866,12 +1584,16 @@ def main() -> int:
     try:
         if args.command == "init":
             initialize_workflow(args.job, args.state)
+        elif args.command == "migrate-state":
+            command_migrate_state(args)
         elif args.command == "status":
             command_status(args)
         elif args.command == "capability":
             command_capability(args)
         elif args.command == "stage":
             command_stage(args)
+        elif args.command == "evaluate-stage":
+            command_evaluate_stage(args)
         elif args.command == "open-issue":
             command_open_issue(args)
         elif args.command == "patch":
@@ -880,12 +1602,18 @@ def main() -> int:
             command_review(args)
         elif args.command == "restore":
             command_restore(args)
+        elif args.command == "invalidate":
+            command_invalidate(args)
         elif args.command == "publish":
             command_publish(args)
         else:
             raise WorkflowError(f"unknown command: {args.command}")
-    except (OSError, ValueError, json.JSONDecodeError, WorkflowError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+    except WorkflowError as error:
+        print(json.dumps({"ok": False, "error": error.to_dict()}, ensure_ascii=False))
+        return 2
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        wrapped = WorkflowError(str(error), "WORKFLOW_IO_OR_DATA_ERROR")
+        print(json.dumps({"ok": False, "error": wrapped.to_dict()}, ensure_ascii=False))
         return 2
     return 0
 

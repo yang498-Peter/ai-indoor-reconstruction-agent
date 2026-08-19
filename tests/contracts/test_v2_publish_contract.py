@@ -170,11 +170,18 @@ class V2PublishContractTest(unittest.TestCase):
             if name != "publish":
                 state["stages"][name]["status"] = "PASS"
                 state["stages"][name]["sceneSha256"] = legacy_sha
+                state["stages"][name]["evaluation"] = {
+                    "evaluator": state["stages"][name]["evaluator"],
+                    "evaluatorCodeSha256": self.loop.sha256_file(LOOP_MODULE),
+                    "pipelineContractDigest": self.loop.PIPELINE_CONTRACT_DIGEST,
+                    "result": "PASS",
+                }
         state["capabilities"]["score-gate"] = {
             "status": "AVAILABLE",
             "reason": "contract fixture",
             "evidence": [],
         }
+        self.loop.event(state, "contract-fixture", "prepare-legacy-publish", {})
         self.loop.save_state(state_path, state)
         args = type(
             "Args",
@@ -225,11 +232,18 @@ class V2PublishContractTest(unittest.TestCase):
             if name != "publish":
                 state["stages"][name]["status"] = "PASS"
                 state["stages"][name]["sceneSha256"] = scene_artifact_sha
+                state["stages"][name]["evaluation"] = {
+                    "evaluator": state["stages"][name]["evaluator"],
+                    "evaluatorCodeSha256": self.loop.sha256_file(LOOP_MODULE),
+                    "pipelineContractDigest": self.loop.PIPELINE_CONTRACT_DIGEST,
+                    "result": "PASS",
+                }
         state["capabilities"]["score-gate"] = {
             "status": "AVAILABLE",
             "reason": "V2 deterministic evaluator",
             "evidence": [],
         }
+        self.loop.event(state, "contract-fixture", "prepare-v2-publish", {})
         self.loop.save_state(state_path, state)
 
         args = type(

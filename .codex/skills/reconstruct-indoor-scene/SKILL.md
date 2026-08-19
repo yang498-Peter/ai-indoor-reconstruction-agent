@@ -45,13 +45,13 @@ After the macro pass, correct the hypothesis region by region: point clouds refi
 1. Read the nearest repository instructions and inspect dirty files before editing.
 2. Keep the capture read-only. Write derivatives to a dedicated output directory.
 3. Run `scripts/discover_capture.py --data <capture> --output <work>/capture-manifest.json`. If it returns `BLOCKED_MULTI_CAPTURE_ROOT`, select exactly one reported `relativeRoot` and rediscover there. If one unit still returns `BLOCKED_AMBIGUOUS_CLOUD`, rerun with `--point-cloud <exact-relative-path>` after inspecting the alternatives. If it returns `BLOCKED_NO_POINT_CLOUD`, stop. Never pair a cloud from one capture unit with photos or poses from another.
-4. Inspect an unannotated overview and decide the scene domain. For a new indoor dataset, run `scripts/init_reconstruction_job.py --data <capture-unit> --work <fresh-work> --scene-domain indoor --scaffold <repo>/prototypes/litereality-three-demo`. `outdoor`, `mixed`, and `unknown` fail closed here - route those captures to the `reconstruct-site-scene` skill instead. The work directory must be outside the capture and bound to its fingerprint. This also creates `pipeline-state.json` with resumable stages, capability truth, issue history, and checkpoints.
+4. Inspect an unannotated overview and decide the scene domain. For a new indoor dataset, run `scripts/init_reconstruction_job.py --data <capture-unit> --work <fresh-work> --scene-domain indoor --scaffold <repo>/prototypes/litereality-three-demo`. `outdoor`, `mixed`, and `unknown` fail closed here - route those captures to the `reconstruct-site-scene` skill instead. The work directory must be outside the capture and bound to its fingerprint. This also creates a V2 `pipeline-state.json` bound to `schemas/pipeline-contract-v2.json`, with nine resumable stages, capability truth, issue history, and checkpoints. An older state must enter through `reconstruction_loop.py migrate-state`; never edit its version by hand.
 5. Treat `READY_GEOMETRY_ONLY` as permission for geometry work only. Missing photos blocks material acceptance; missing pose/transform evidence blocks posed-photo association; either condition blocks whole-scene acceptance.
 6. Reuse an existing local viewer/generator when present. The current `prototypes/litereality-three-demo` generator and ledgers are example-bound: for a new dataset, parameterize source path, output root, capture fingerprint, and a blank ledger before running it. Never let a new capture reuse the example scene, evidence, screenshots, or decisions.
 7. Otherwise adapt the semantic-scene and Three.js scaffold without hardcoding a capture path, filename convention, or room layout.
 8. Record the source coordinate system and one explicit source-to-display mapping. Indoor source data is commonly Z-up; Three.js scenes commonly use Y-up.
 
-Before passing a stage, register the actual local tools behind its capabilities with `scripts/reconstruction_loop.py capability`. `AVAILABLE` requires an existing tool/artifact plus a separate probe receipt bound to that file's hash; file existence alone is insufficient. Degraded or blocked capability must stay visibly degraded or blocked.
+Before evaluating a stage, register the actual local tools behind its capabilities with `scripts/reconstruction_loop.py capability`. `AVAILABLE` requires an existing tool/artifact plus a separate probe receipt bound to that file's hash; file existence alone is insufficient. Degraded or blocked capability must stay visibly degraded or blocked. The generic `stage` command cannot write `PASS`; call `evaluate-stage` with every typed artifact required by the machine contract. Authority-bound derived artifacts must include the current scene SHA in their input ledger.
 
 If a capture lacks photos, continue with point-cloud geometry and mark material or occlusion completion as inference. If a surface is not defensibly modelable, explicitly reject it instead of leaving a candidate.
 
@@ -118,7 +118,7 @@ For every iteration, open one concrete issue in `pipeline-state.json` and work i
 2. Compare global raw, global overlay, regional raw/overlay, local elevation and relevant photos. Add Three.js overlay/model views at the regional sign-off and final delivery stages.
 3. Check position, direction, endpoints, dimensions, height bands, material, openings, occlusion completion, collision, regularity, and omissions.
 4. Write corrections into the human resolution ledger; never let an algorithm silently move accepted geometry.
-5. Run `reconstruction_loop.py patch` immediately after the semantic scene parses. It stores a last-known-good hash-addressed checkpoint and invalidates downstream review.
+5. Run `reconstruction_loop.py patch` immediately after the semantic scene parses. It stores a last-known-good hash-addressed checkpoint and invalidates presentation, regional, global, and publish stages through the contract DAG. A presentation-only change uses `invalidate --change presentation` and must not invalidate evidence or authority stages.
 6. Run `reconstruction_loop.py review` with a new render plus independent raw/overlay/elevation/photo evidence. Every issue requires a reviewer other than the patch author; P0/P1 uses an independent regional or adversarial reviewer.
 7. Invalidate old screenshots and scores whenever scene geometry changes. Two non-improving attempts trigger a mandatory strategy change before another patch.
 8. Repeat failed regions before scoring the whole scene.
@@ -137,7 +137,7 @@ Read [references/adversarial-review.md](references/adversarial-review.md). If su
 
 Do not accept `candidateCount=0` as proof of quality. Reviewers must try to find forced acceptance, hidden omissions, duplicate walls, fake slabs, skewed partitions, crossed openings, and evidence laundering.
 
-Pass `regional-review` only after every known regional issue resolves. Then run a fresh whole-scene review and pass `global-review` against the same scene hash. Opening or patching any issue invalidates both reviews.
+Pass `presentation-review` first, then `regional-review` only after every known regional issue resolves. Run a fresh whole-scene review and pass `global-review` against the same scene hash. Opening or patching any issue invalidates all three review stages and publication.
 
 ## Score and gate
 

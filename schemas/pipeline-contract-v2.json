@@ -1,0 +1,132 @@
+{
+  "$schema": "./pipeline-contract-v2.schema.json",
+  "schemaVersion": "2.0",
+  "artifactType": "pipeline-contract-v2",
+  "stateSchemaVersion": 2,
+  "stages": [
+    {
+      "name": "intake",
+      "dependsOn": [],
+      "requiredCapabilities": ["capture-selection"],
+      "requiredArtifacts": ["reconstruction-job"],
+      "requiredArtifactChecks": {"reconstruction-job": []},
+      "sceneBinding": "none",
+      "blocksOnOpenIssues": false,
+      "evaluator": "initialize_intake"
+    },
+    {
+      "name": "evidence",
+      "dependsOn": ["intake"],
+      "requiredCapabilities": ["point-cloud-sections"],
+      "requiredArtifacts": ["evidence-bundle"],
+      "requiredArtifactChecks": {
+        "evidence-bundle": ["indexChecksumsValid", "levelDispositionExplicit", "poseCapabilityValidated"]
+      },
+      "sceneBinding": "none",
+      "blocksOnOpenIssues": false,
+      "evaluator": "evaluate_evidence"
+    },
+    {
+      "name": "macro-hypothesis",
+      "dependsOn": ["evidence"],
+      "requiredCapabilities": ["point-cloud-sections"],
+      "requiredArtifacts": ["macro-hypothesis"],
+      "requiredArtifactChecks": {
+        "macro-hypothesis": ["observationsSeparated", "floorEnvelopeNotShell", "topologyCandidatesPresent"]
+      },
+      "sceneBinding": "none",
+      "blocksOnOpenIssues": false,
+      "evaluator": "evaluate_macro_hypothesis"
+    },
+    {
+      "name": "seed",
+      "dependsOn": ["macro-hypothesis"],
+      "requiredCapabilities": ["semantic-scene-compiler"],
+      "requiredArtifacts": ["scene-authority"],
+      "requiredArtifactChecks": {"scene-authority": []},
+      "sceneBinding": "authority",
+      "blocksOnOpenIssues": false,
+      "evaluator": "evaluate_seed"
+    },
+    {
+      "name": "author",
+      "dependsOn": ["seed"],
+      "requiredCapabilities": ["semantic-edit", "deterministic-render"],
+      "requiredArtifacts": ["scene-authority"],
+      "requiredArtifactChecks": {"scene-authority": []},
+      "sceneBinding": "authority",
+      "blocksOnOpenIssues": true,
+      "evaluator": "evaluate_author"
+    },
+    {
+      "name": "presentation-review",
+      "dependsOn": ["author"],
+      "requiredCapabilities": ["deterministic-render", "visual-inspection"],
+      "requiredArtifacts": ["scene-presentation", "presentation-review-receipt"],
+      "requiredArtifactChecks": {
+        "scene-presentation": [],
+        "presentation-review-receipt": ["viewerLoad", "framing", "authorityUnmodified"]
+      },
+      "sceneBinding": "authority",
+      "blocksOnOpenIssues": true,
+      "evaluator": "evaluate_presentation_review"
+    },
+    {
+      "name": "regional-review",
+      "dependsOn": ["presentation-review"],
+      "requiredCapabilities": ["deterministic-render", "visual-inspection"],
+      "requiredArtifacts": ["regional-review-receipt", "omission-audit"],
+      "requiredArtifactChecks": {
+        "regional-review-receipt": ["requiredRegionsReviewed", "currentRenderBound"],
+        "omission-audit": ["allEligibleProposalsDisposed"]
+      },
+      "sceneBinding": "authority",
+      "blocksOnOpenIssues": true,
+      "evaluator": "evaluate_regional_review"
+    },
+    {
+      "name": "global-review",
+      "dependsOn": ["regional-review"],
+      "requiredCapabilities": ["visual-inspection", "topology-check", "overlap-check"],
+      "requiredArtifacts": ["global-review-receipt"],
+      "requiredArtifactChecks": {
+        "global-review-receipt": ["topology", "joints", "openings", "collisions", "omission", "support"]
+      },
+      "sceneBinding": "authority",
+      "blocksOnOpenIssues": true,
+      "evaluator": "evaluate_global_review"
+    },
+    {
+      "name": "publish",
+      "dependsOn": ["global-review"],
+      "requiredCapabilities": ["score-gate"],
+      "requiredArtifacts": ["publish-manifest"],
+      "requiredArtifactChecks": {"publish-manifest": []},
+      "sceneBinding": "authority",
+      "blocksOnOpenIssues": true,
+      "evaluator": "publish_v2"
+    }
+  ],
+  "changeInvalidation": {
+    "evidence": {
+      "reviewStage": "evidence",
+      "pendingStages": ["macro-hypothesis", "seed", "author", "presentation-review", "regional-review", "global-review", "publish"]
+    },
+    "authority": {
+      "reviewStage": "author",
+      "pendingStages": ["presentation-review", "regional-review", "global-review", "publish"]
+    },
+    "presentation": {
+      "reviewStage": null,
+      "pendingStages": ["presentation-review", "regional-review", "global-review", "publish"]
+    },
+    "renderer": {
+      "reviewStage": null,
+      "pendingStages": ["presentation-review", "regional-review", "global-review", "publish"]
+    },
+    "config": {
+      "reviewStage": "intake",
+      "pendingStages": ["evidence", "macro-hypothesis", "seed", "author", "presentation-review", "regional-review", "global-review", "publish"]
+    }
+  }
+}
