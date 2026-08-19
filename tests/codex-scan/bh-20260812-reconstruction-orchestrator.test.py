@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +44,19 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        self.scene.write_text('{"structures": [{"id": "Wall01"}]}\n', encoding="utf-8")
+        self.scene.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": "2.0",
+                    "job": {"id": "indoor-test"},
+                    "nodes": [],
+                    "evidence": [],
+                    "review": {"issues": []},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         self.raw.write_bytes(b"raw-evidence")
         self.render.write_bytes(b"render-evidence")
         self.tool.write_text("raise SystemExit(0)\n", encoding="utf-8")
@@ -84,14 +97,64 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             )
 
     def pass_stage(self, name: str, scene: bool = False, actor: str = "root") -> None:
-        loop.command_stage(
+        scene_path = self.scene if scene or loop.STAGE_SPECS[name]["sceneBinding"] == "authority" else None
+        scene_sha = loop.sha256_file(self.scene) if scene_path else None
+        artifacts = []
+        for artifact_type in loop.STAGE_SPECS[name]["requiredArtifacts"]:
+            if artifact_type == "scene-authority":
+                continue
+            payload = {
+                "status": "PASS",
+                "checks": {
+                    check: True
+                    for check in loop.STAGE_SPECS[name]["requiredArtifactChecks"][artifact_type]
+                },
+                "fixture": artifact_type,
+            }
+            payload_digest = hashlib.sha256(
+                json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            value = {
+                "schemaVersion": "1.0",
+                "artifactType": artifact_type,
+                "jobId": "indoor-test",
+                "captureFingerprint": "a" * 64,
+                "payloadDigest": payload_digest,
+                "producer": {
+                    "name": "orchestrator-test",
+                    "version": "1.0",
+                    "gitSha": "b" * 40,
+                    "command": ["fixture"],
+                    "configDigest": "c" * 64,
+                    "environmentDigest": "d" * 64,
+                    "randomSeed": 0,
+                },
+                "inputs": [],
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "payload": payload,
+            }
+            if scene_sha:
+                value["inputs"].append(
+                    {
+                        "artifactType": "scene-authority",
+                        "artifactSha256": scene_sha,
+                    }
+                )
+            path = self.root / f"{name}-{artifact_type}.json"
+            path.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            artifacts.append(f"{artifact_type}={path}")
+        loop.command_evaluate_stage(
             self.args(
                 state=self.state_path,
                 actor=actor,
                 name=name,
-                status="PASS",
-                artifact=[str(self.raw)],
-                scene=self.scene if scene or name == "seed" else None,
+                artifact=artifacts,
+                scene=scene_path,
                 note="synthetic pass",
             )
         )
@@ -143,6 +206,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.pass_stage("evidence")
         self.bind("point-cloud-sections")
         self.pass_stage("evidence")
+        self.pass_stage("macro-hypothesis")
         with self.assertRaises(loop.WorkflowError):
             self.pass_stage("author", scene=True)
 
@@ -329,10 +393,12 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             "overlap-check",
         )
         self.pass_stage("evidence")
+        self.pass_stage("macro-hypothesis")
         self.pass_stage("seed")
         issue_id = self.open_patch()
         self.review(issue_id, "reviewer-east", "PASS", 90)
         self.pass_stage("author", scene=True)
+        self.pass_stage("presentation-review", scene=True, actor="presentation-reviewer")
         self.pass_stage("regional-review", scene=True, actor="regional-reviewer")
         self.pass_stage("global-review", scene=True, actor="global-red-team")
         loop.command_open_issue(
@@ -364,10 +430,12 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             "score-gate",
         )
         self.pass_stage("evidence")
+        self.pass_stage("macro-hypothesis")
         self.pass_stage("seed")
         issue_id = self.open_patch()
         self.review(issue_id, "reviewer-east", "PASS", 90)
         self.pass_stage("author", scene=True)
+        self.pass_stage("presentation-review", scene=True, actor="presentation-reviewer")
         self.pass_stage("regional-review", scene=True, actor="regional-reviewer")
         self.pass_stage("global-review", scene=True, actor="global-red-team")
         scene_sha = loop.sha256_file(self.scene)

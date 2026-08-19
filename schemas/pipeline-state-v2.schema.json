@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/pipeline-state-v2.schema.json",
+  "title": "Indoor reconstruction pipeline state V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "pipelineContractDigest", "jobId", "captureFingerprint",
+    "job", "jobSha256", "createdAt", "revision", "stageOrder", "stages",
+    "capabilities", "issues", "currentSceneSha256", "lastCheckpoint", "events"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "pipelineContractDigest": {"$ref": "#/$defs/sha256"},
+    "jobId": {"type": ["string", "null"]},
+    "captureFingerprint": {"$ref": "#/$defs/sha256"},
+    "job": {"type": "string", "minLength": 1},
+    "jobSha256": {"$ref": "#/$defs/sha256"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "revision": {"type": "integer", "minimum": 0},
+    "stageOrder": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "intake"}, {"const": "evidence"},
+        {"const": "macro-hypothesis"}, {"const": "seed"},
+        {"const": "author"}, {"const": "presentation-review"},
+        {"const": "regional-review"}, {"const": "global-review"},
+        {"const": "publish"}
+      ],
+      "items": false
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intake", "evidence", "macro-hypothesis", "seed", "author",
+        "presentation-review", "regional-review", "global-review", "publish"
+      ],
+      "properties": {
+        "intake": {"$ref": "#/$defs/stage"},
+        "evidence": {"$ref": "#/$defs/stage"},
+        "macro-hypothesis": {"$ref": "#/$defs/stage"},
+        "seed": {"$ref": "#/$defs/stage"},
+        "author": {"$ref": "#/$defs/stage"},
+        "presentation-review": {"$ref": "#/$defs/stage"},
+        "regional-review": {"$ref": "#/$defs/stage"},
+        "global-review": {"$ref": "#/$defs/stage"},
+        "publish": {"$ref": "#/$defs/stage"}
+      }
+    },
+    "capabilities": {"type": "object", "additionalProperties": {"type": "object"}},
+    "issues": {"type": "array", "items": {"type": "object"}},
+    "currentSceneSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "currentScenePath": {"type": "string", "minLength": 1},
+    "lastCheckpoint": {"anyOf": [{"$ref": "#/$defs/artifact"}, {"type": "null"}]},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifact": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "attempt", "updatedAt", "actor", "note", "artifacts",
+        "sceneSha256", "evaluator", "evaluation"
+      ],
+      "properties": {
+        "status": {"enum": ["PENDING", "IN_PROGRESS", "REVIEW", "PASS", "BLOCKED", "FAILED"]},
+        "attempt": {"type": "integer", "minimum": 0},
+        "updatedAt": {"type": ["string", "null"]},
+        "actor": {"type": ["string", "null"]},
+        "note": {"type": "string"},
+        "artifacts": {"type": "array", "items": {"type": "object"}},
+        "sceneSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "evaluator": {"type": "string", "minLength": 1},
+        "evaluation": {"type": ["object", "null"]}
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["at", "actor", "action", "details"],
+      "properties": {
+        "at": {"type": "string", "format": "date-time"},
+        "actor": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "details": {"type": "object"}
+      }
+    }
+  }
+}
