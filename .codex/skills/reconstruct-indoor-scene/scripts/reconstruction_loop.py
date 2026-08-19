@@ -632,26 +632,38 @@ def command_publish(args: argparse.Namespace) -> None:
     if open_issues(state):
         raise WorkflowError("cannot publish with unresolved issues")
     scene = scene_artifact(args.scene)
+    scene_payload = load_json(args.scene)
+    if scene_payload.get("schemaVersion") != "2.0":
+        if "structures" in scene_payload or "structureCandidates" in scene_payload:
+            raise WorkflowError(
+                "LEGACY_SCENE_REQUIRES_MIGRATION:run scene-core/migrate_scene_v1_to_v2.py"
+            )
+        raise WorkflowError("SCHEMA_VERSION_MISMATCH:publish requires Semantic Scene V2")
     review = load_json(args.review)
-    score = load_json(args.score)
+    quality_report_path = getattr(args, "quality_report", None)
+    if quality_report_path is None:
+        quality_report_path = getattr(args, "score", None)
+    if quality_report_path is None:
+        raise WorkflowError("publish requires --quality-report")
+    quality_report = load_json(quality_report_path)
     if scene["sha256"] != state.get("currentSceneSha256"):
         raise WorkflowError("publish scene is not the latest checkpoint")
     if state["stages"]["global-review"].get("sceneSha256") != scene["sha256"]:
         raise WorkflowError("global review is stale for this scene")
-    if review.get("sceneSha256") != scene["sha256"]:
-        raise WorkflowError("review receipt is stale for this scene")
-    if score.get("status") != "PASS" or score.get("sceneSha256") != scene["sha256"]:
-        raise WorkflowError("score report is not PASS for this scene")
-    scorer = Path(__file__).with_name("score_scene.py")
-    with tempfile.TemporaryDirectory(prefix="reconstruction-publish-score-") as temp_root:
-        recomputed_path = Path(temp_root) / "score.json"
+    if quality_report.get("status") != "PASS":
+        raise WorkflowError("quality report is not PASS for this scene")
+    if quality_report.get("artifactSha256") != scene["sha256"]:
+        raise WorkflowError("quality report is stale for this scene artifact")
+    evaluator = Path(__file__).resolve().parents[4] / "scene-core" / "quality_report_v2.py"
+    with tempfile.TemporaryDirectory(prefix="reconstruction-publish-quality-") as temp_root:
+        recomputed_path = Path(temp_root) / "quality-report.json"
         completed = subprocess.run(
             [
                 sys.executable,
-                str(scorer),
+                str(evaluator),
                 "--scene",
                 str(args.scene.resolve()),
-                "--visual-review",
+                "--review",
                 str(args.review.resolve()),
                 "--output",
                 str(recomputed_path),
@@ -662,30 +674,44 @@ def command_publish(args: argparse.Namespace) -> None:
             encoding="utf-8",
         )
         if completed.returncode != 0:
-            raise WorkflowError("independent score recomputation failed; publication remains blocked")
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise WorkflowError(
+                "independent V2 quality recomputation failed; publication remains blocked"
+                + (f": {detail}" if detail else "")
+            )
         recomputed = load_json(recomputed_path)
-    if recomputed != score:
-        raise WorkflowError("supplied score report differs from independent recomputation")
+    if recomputed != quality_report:
+        raise WorkflowError("supplied quality report differs from independent V2 recomputation")
     job = load_json(Path(state["job"]))
     blocked = set(job.get("blockedCapabilities", []))
     if blocked.intersection({"whole-scene-acceptance", "material-acceptance", "posed-photo-association"}):
         raise WorkflowError("job remains geometry-only or lacks whole-scene evidence capabilities")
-    publish_dir = args.output.resolve() / scene["sha256"][:16]
+    geometry_digest = quality_report.get("geometryDigest")
+    if not isinstance(geometry_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", geometry_digest):
+        raise WorkflowError("quality report has no valid geometryDigest")
+    publish_dir = args.output.resolve() / geometry_digest[:16]
     if publish_dir.exists():
         raise WorkflowError(f"immutable publish directory already exists: {publish_dir}")
     publish_dir.mkdir(parents=True)
     files = {}
-    for name, source in (("scene.json", args.scene), ("review-receipt.json", args.review), ("scene-score.json", args.score)):
+    for name, source in (
+        ("scene-authority.json", args.scene),
+        ("review-receipt.json", args.review),
+        ("quality-report.json", quality_report_path),
+    ):
         destination = publish_dir / name
         shutil.copyfile(source.resolve(), destination)
         files[name] = artifact(destination)
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": "2.0",
         "publishedAt": now_iso(),
         "publisher": args.actor,
         "jobId": state.get("jobId"),
         "captureFingerprint": state.get("captureFingerprint"),
-        "sceneSha256": scene["sha256"],
+        "geometryDigest": geometry_digest,
+        "artifactSha256": scene["sha256"],
+        "evidenceSetDigest": quality_report.get("evidenceSetDigest"),
+        "configDigest": quality_report.get("configDigest"),
         "files": files,
     }
     write_json_atomic(publish_dir / "publish-manifest.json", manifest)
@@ -704,7 +730,16 @@ def command_publish(args: argparse.Namespace) -> None:
             "sceneSha256": scene["sha256"],
         }
     )
-    event(state, args.actor, "publish", {"directory": str(publish_dir), "sceneSha256": scene["sha256"]})
+    event(
+        state,
+        args.actor,
+        "publish",
+        {
+            "directory": str(publish_dir),
+            "geometryDigest": geometry_digest,
+            "artifactSha256": scene["sha256"],
+        },
+    )
     save_state(args.state, state)
     print(str(publish_dir))
 
@@ -820,7 +855,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--actor", required=True)
     publish.add_argument("--scene", required=True, type=Path)
     publish.add_argument("--review", required=True, type=Path)
-    publish.add_argument("--score", required=True, type=Path)
+    publish.add_argument("--quality-report", required=True, type=Path)
     publish.add_argument("--output", required=True, type=Path)
     publish.add_argument("--note", default="")
     return parser

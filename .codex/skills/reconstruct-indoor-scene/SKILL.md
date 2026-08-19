@@ -141,15 +141,15 @@ Pass `regional-review` only after every known regional issue resolves. Then run 
 
 ## Score and gate
 
-After visual review, create a scene-bound review receipt in the capture work directory. The receipt must bind the scene hash, evidence hashes, reviewer identity and review time, then run:
+After visual review, create a Scene V2 review receipt in the capture work directory. The receipt must bind `geometryDigest`, `evidenceSetDigest`, the scene `artifactSha256`, structured reviewer identity and review time, then run:
 
 For a browser-free static review, do not hand-edit `PASS`. First render the final top and cutaway manifests, then run `scripts/accept_static_visual_review.py`. It verifies the current scene, renderer and output hashes, all blocking scene gates, and the checklist semantic hash before it writes the checklist and receipt. Any later scene or renderer change makes that acceptance stale.
 
 ```powershell
-python .codex\skills\reconstruct-indoor-scene\scripts\score_scene.py --scene <scene.json> --visual-review <review.json> --output <score.json>
+python scene-core\quality_report_v2.py --scene <scene-authority.json> --review <review-receipt.json> --output <quality-report.json>
 ```
 
-`score_scene.py` automatically reads `<scene-dir>/wall-joint-review.json`; pass `--wall-joint-review <path>` only when the receipt is stored elsewhere. Missing or failed endpoint/T-junction review is blocking.
+`quality_report_v2.py` accepts Semantic Scene V2 only. A V1 `structures` scene fails with `LEGACY_SCENE_REQUIRES_MIGRATION`; migrate it explicitly before evaluation. The archived V1 scorer under `scripts/legacy/` is for historical example verification only and is never called by publication.
 
 Pass only when all are true:
 
@@ -160,7 +160,7 @@ Pass only when all are true:
 - measured plan offsets are at most 0.08 m; larger or unmeasured completions must be `accepted-inferred`, retain an explicit reason, and link at least two distinct verified evidence files;
 - every reviewed region scores at least 85 and total score is at least 90;
 - the review receipt hash matches the current scene;
-- `structures` and `author` pipeline stages, all blocking quality loops, every region declared by the current scene, declared topology, and overlap review all pass;
+- the V2 evidence ledger has no unresolved non-level nodes, declared topology contains at least one space, and every current P0/P1 issue is resolved;
 - no fake camera envelope, door-filling wall, exact duplicate structure, or stale screenshot remains.
 - no persistent raw cross-wall remains unexplained inside a declared room band;
 - no accepted envelope face is contradicted by structural cross-walls continuing beyond it;
@@ -188,7 +188,7 @@ Presentation quality additionally requires logical-object counts, child collapse
 
 Prefer one final syntax/JSON/UTF-8 check over repeatedly running broad regression suites. Visual reconstruction quality comes from evidence comparison and correction, not test volume.
 
-After `score_scene.py` passes, call `reconstruction_loop.py publish`. It refuses stale hashes, unresolved issues, incomplete stages, geometry-only limitations, or an existing publish directory, and writes a new immutable hash-addressed snapshot.
+After `quality_report_v2.py` passes, call `reconstruction_loop.py publish --quality-report <quality-report.json>`. It independently recomputes the V2 report, refuses stale digests, unresolved issues, incomplete stages, geometry-only limitations, V1 input, or an existing publish directory, and writes a new immutable geometry-digest-addressed snapshot.
 
 ## Deliver
 

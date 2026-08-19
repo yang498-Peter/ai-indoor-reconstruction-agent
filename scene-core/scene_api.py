@@ -63,6 +63,35 @@ def scene_sha256(scene: dict) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _canonical_digest(value: object) -> str:
+    canonical = json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def geometry_digest(scene: dict) -> str:
+    """Hash stable authority geometry without review, presentation, or revisions."""
+    return _canonical_digest(
+        {
+            "schemaVersion": scene.get("schemaVersion"),
+            "dataset": scene.get("dataset"),
+            "coordinateFrame": scene.get("coordinateFrame"),
+            "nodes": scene.get("nodes", {}),
+            "rootNodeIds": scene.get("rootNodeIds", []),
+        }
+    )
+
+
+def evidence_set_digest(scene: dict) -> str:
+    """Hash the authority evidence ledger independently from geometry bytes."""
+    return _canonical_digest(scene.get("evidence", {}))
+
+
 def load_scene(path: Path) -> dict:
     if not path.is_file():
         raise SceneError(f"SCENE_NOT_FOUND:{path}")

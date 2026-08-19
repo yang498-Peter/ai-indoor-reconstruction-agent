@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/quality-report-v2.schema.json",
+  "title": "Semantic Scene V2 deterministic quality report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "artifactType",
+    "sceneSchemaVersion",
+    "status",
+    "geometryDigest",
+    "artifactSha256",
+    "evidenceSetDigest",
+    "configDigest",
+    "producer",
+    "checks",
+    "errors"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "artifactType": {"const": "quality-report-v2"},
+    "sceneSchemaVersion": {"const": "2.0"},
+    "status": {"enum": ["PASS", "FAIL"]},
+    "geometryDigest": {"$ref": "#/$defs/sha256"},
+    "artifactSha256": {"$ref": "#/$defs/sha256"},
+    "evidenceSetDigest": {"$ref": "#/$defs/sha256"},
+    "configDigest": {"$ref": "#/$defs/sha256"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "codeSha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "codeSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sceneV2Valid",
+        "unresolvedEvidenceCount",
+        "declaredSpaceCount",
+        "blockingIssueCount",
+        "evidenceFilesValid",
+        "reviewIdentityValid",
+        "reviewBindingCurrent",
+        "reviewHasNoP0P1"
+      ],
+      "properties": {
+        "sceneV2Valid": {"type": "boolean"},
+        "unresolvedEvidenceCount": {"type": "integer", "minimum": 0},
+        "declaredSpaceCount": {"type": "integer", "minimum": 0},
+        "blockingIssueCount": {"type": "integer", "minimum": 0},
+        "evidenceFilesValid": {"type": "boolean"},
+        "reviewIdentityValid": {"type": "boolean"},
+        "reviewBindingCurrent": {"type": "boolean"},
+        "reviewHasNoP0P1": {"type": "boolean"}
+      }
+    },
+    "errors": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

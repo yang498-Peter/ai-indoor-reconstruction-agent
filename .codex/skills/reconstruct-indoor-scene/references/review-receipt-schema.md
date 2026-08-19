@@ -1,11 +1,20 @@
 # Review receipt schema
 
-Bind every review to the exact `scene.json` SHA-256.
+Bind every Semantic Scene V2 review to separate geometry, evidence-set, and
+artifact-byte digests. Do not use the legacy ambiguous `sceneSha256` field.
 
 ```json
 {
-  "sceneSha256": "64 lowercase hex characters",
-  "reviewer": "agent or human identifier",
+  "schemaVersion": "2.0",
+  "geometryDigest": "64 lowercase hex characters",
+  "evidenceSetDigest": "64 lowercase hex characters",
+  "artifactSha256": "64 lowercase hex characters",
+  "reviewer": {
+    "actorId": "regional-reviewer",
+    "runId": "UUID or equivalent immutable execution id",
+    "role": "reviewer",
+    "provider": "codex|human|deterministic-checker"
+  },
   "reviewedAt": "ISO-8601 timestamp",
   "p0": [],
   "p1": [],
@@ -32,6 +41,15 @@ Bind every review to the exact `scene.json` SHA-256.
 }
 ```
 
-List every region declared by `scene.areaReview.regionIds`, each exactly once. The example scene has six regions; an unfamiliar scene may define a different non-zero set. Evidence paths are resolved relative to the receipt and their SHA-256 values are verified. `reviewer` must be a non-empty identifier and `reviewedAt` must be a timezone-aware ISO-8601 timestamp that is not in the future. Scores are integers from 0 to 100. A receipt with missing/extra/duplicate areas, stale evidence, stale scene hash, P0/P1 findings, or any area below 85 cannot pass.
+List every required region exactly once. Evidence paths are resolved relative to
+the receipt and their SHA-256 values are verified. `reviewer` is a structured
+identity; `reviewedAt` must be a timezone-aware ISO-8601 timestamp that is not
+in the future. Scores are integers from 0 to 100. A receipt with stale geometry,
+evidence or artifact digests, P0/P1 findings, stale evidence, or a required area
+below 85 cannot pass.
 
-The scorer also reopens the scene evidence rather than trusting summary counts: every `accepted-inferred` structure needs an explicit `inferenceReason` plus at least two distinct, existing files in `evidence.inferenceEvidencePaths`. The scene itself must publish `pipeline.structures=PASS`, `pipeline.author=PASS`, `areaReview=PASS`, `declaredTopologyReview=PASS`, `overlapReview=PASS`, and all blocking quality loops as `PASS`. Advisory loops may remain `REVIEW` only when they explicitly set `blocking: false`.
+`scene-core/quality_report_v2.py` reopens the authority ledger instead of
+trusting summary counts. It requires no unresolved non-level evidence, at least
+one declared topology space, no current P0/P1 issue, current hash-bound measured
+evidence files, a structured reviewer identity, and an exact three-digest
+binding. Legacy V1 quality fields do not participate in this decision.

@@ -97,15 +97,28 @@ python scene-core\migrate_scene_v1_to_v2.py --input old\scene.json --output work
 
 # 测试
 python tests\scene-v2\test_scene_api.py
+python tests\contracts\test_v2_publish_contract.py
 node --test tests\scene-v2\scene-core.test.mjs
 python scripts\validate_portable_repo.py
 ```
 
 样例场景所有接受节点引用 `synthetic-sample` 类型回执——明确标记为演示，不冒充实测。
 
+## V2 评估与发布
+
+```powershell
+python scene-core\quality_report_v2.py --scene work\scene-authority.json --review work\review-receipt.json --output work\quality-report.json
+python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py publish --state work\pipeline-state.json --actor publish-gate --scene work\scene-authority.json --review work\review-receipt.json --quality-report work\quality-report.json --output work\publish
+```
+
+- `geometryDigest` 只绑定稳定的权威几何；`evidenceSetDigest` 单独绑定证据账本；`artifactSha256` 绑定场景文件字节；
+- 发布会重新运行同一 V2 evaluator，并逐字段比较报告；
+- V1 输入稳定返回 `LEGACY_SCENE_REQUIRES_MIGRATION`，必须先显式迁移；
+- 旧评分器已移至 `scripts/legacy/score_scene_v1.py`，只保留历史样例兼容入口，不再参与 V2 发布。
+
 ## 已知边界（后续任务）
 
-- `verify_acceptance.py` 与 `score_scene.py` 仍消费 V1 视图模型；V2 场景先经编译层导出或待其移植；
+- `verify_acceptance.py` 仍是 V1 prototype 的历史验收入口；V2 authority 必须走 `quality_report_v2.py`，两者不静默互转；
 - Annotator 仍产出 V1 picks；下一步让它直接产出 `scene_api` 的 patch 文件（证据拾取 → 变更 API 的闭环）;
 - 曲面墙、斜墙顶、多层（multi-level）尚未进 schema；坡屋面暂以 `roof-panel` item 表达，未来应升级为 roof 节点；
 - 同一平面区间上下堆叠的洞口（窗下检修孔）在权威模型合法且校验通过，但 `splitWallParts` 按沿墙区间切分，渲染时下部孔洞会被上部洞口的窗下墙实体遮住——账本正确、渲染近似；

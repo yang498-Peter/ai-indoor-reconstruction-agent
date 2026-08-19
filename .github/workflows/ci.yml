@@ -18,6 +18,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python scripts/validate_portable_repo.py
       - run: python tests/codex-scan/bh-20260812-reconstruction-orchestrator.test.py
+      - run: python tests/contracts/test_v2_publish_contract.py
       - run: python tests/scene-v2/test_scene_api.py
       - run: node --test tests/scene-v2/scene-core.test.mjs
       - run: python scene-core/make_sample_scene.py --output sample-out
