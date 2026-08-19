@@ -91,8 +91,10 @@ class CaptureIndexTest(unittest.TestCase):
             every=1,
         )
         self.assertEqual(sha256(self.las), self.source_hash)
-        self.assertEqual(manifest["format"], "capture-index-v1")
+        self.assertEqual(manifest["format"], "capture-index-v2")
         self.assertGreater(len(manifest["tiles"]), 4)
+        self.assertTrue(all(len(tile["contentSha256"]) == 64 for tile in manifest["tiles"].values()))
+        self.assertEqual(manifest["sourceIdentity"]["contentSha256"], self.source_hash)
 
         index = capture_index.CaptureIndex.open(self.index_dir, validate_source=True)
         result = index.query_bbox(
@@ -107,6 +109,19 @@ class CaptureIndexTest(unittest.TestCase):
         self.assertLess(result.stats["pointsRead"], manifest["indexedPointCount"])
         self.assertLess(float(np.max(np.abs((result.x - self.origin_x) * 1000 - np.rint((result.x - self.origin_x) * 1000)))), 1e-4)
         self.assertLess(float(np.max(np.abs((result.y - self.origin_y) * 1000 - np.rint((result.y - self.origin_y) * 1000)))), 1e-4)
+        self.assertEqual(result.stats["ioMode"], "mmap")
+
+    def test_same_size_tile_tampering_is_rejected_before_query(self):
+        manifest = capture_index.build_index(self.las, self.index_dir, tile_size_m=2.0, every=1)
+        key, item = next(iter(manifest["tiles"].items()))
+        tile = self.index_dir / item["path"]
+        payload = bytearray(tile.read_bytes())
+        payload[0] ^= 0x01
+        tile.write_bytes(payload)
+        index = capture_index.CaptureIndex.open(self.index_dir)
+        bounds = manifest["bounds"]
+        with self.assertRaisesRegex(capture_index.CaptureIndexError, "CAPTURE_INDEX_TILE_CHECKSUM_MISMATCH"):
+            index.query_bbox(bounds["minX"], bounds["minY"], bounds["maxX"], bounds["maxY"])
 
     def test_source_identity_change_invalidates_cache(self):
         capture_index.build_index(self.las, self.index_dir, tile_size_m=2.0, every=1)
@@ -114,6 +129,17 @@ class CaptureIndexTest(unittest.TestCase):
         index.validate_source()
         stat = self.las.stat()
         os.utime(self.las, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        with self.assertRaises(capture_index.CaptureIndexError):
+            index.validate_source()
+
+    def test_same_size_same_mtime_source_content_change_invalidates_cache(self):
+        capture_index.build_index(self.las, self.index_dir, tile_size_m=2.0, every=1)
+        index = capture_index.CaptureIndex.open(self.index_dir, validate_source=True)
+        stat = self.las.stat()
+        payload = bytearray(self.las.read_bytes())
+        payload[-1] ^= 0x01
+        self.las.write_bytes(payload)
+        os.utime(self.las, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         with self.assertRaises(capture_index.CaptureIndexError):
             index.validate_source()
 

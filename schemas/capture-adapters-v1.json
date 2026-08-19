@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "1.0",
+  "registryId": "indoor-capture-adapters-v1",
+  "pointCloudAdapters": [
+    {
+      "id": "laspy-las-v1",
+      "extensions": [".las"],
+      "status": "SUPPORTED",
+      "parser": "laspy",
+      "coordinatePolicy": "explicit-unit-axis-reference"
+    },
+    {
+      "id": "laspy-laz-v1",
+      "extensions": [".laz"],
+      "status": "CONDITIONAL",
+      "parser": "laspy",
+      "requiredBackend": "laspy-laz-backend",
+      "coordinatePolicy": "explicit-unit-axis-reference"
+    },
+    {
+      "id": "unsupported-point-cloud-v1",
+      "extensions": [".e57", ".ply", ".pcd", ".xyz"],
+      "status": "UNSUPPORTED",
+      "parser": null,
+      "coordinatePolicy": "none"
+    }
+  ],
+  "poseAdapters": [
+    {
+      "id": "transforms-json-c2w-opengl-v1",
+      "fileNames": ["transforms.json"],
+      "status": "SUPPORTED",
+      "matrixDirection": "camera-to-world",
+      "cameraConvention": "OpenGL",
+      "forwardAxis": "-Z"
+    },
+    {
+      "id": "imgpose-txt-semantic-v1",
+      "fileNames": ["imgpose.txt"],
+      "status": "SEMANTIC_ONLY",
+      "matrixDirection": "UNDECLARED",
+      "cameraConvention": "UNDECLARED",
+      "forwardAxis": "UNDECLARED"
+    }
+  ]
+}

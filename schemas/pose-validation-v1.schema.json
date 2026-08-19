@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-indoor-reconstruction-agent/pose-validation-v1.schema.json",
+  "title": "Pose Validation V1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "artifactType", "status", "checks", "sourceSetDigest", "frames"],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "artifactType": {"const": "pose-validation"},
+    "status": {"enum": ["PASS", "FAIL", "NOT_AVAILABLE", "ALIGNMENT_REQUIRED"]},
+    "sourceSetDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "coordinateConvention", "imageBindings", "pointCloudAlignment"],
+      "properties": {
+        "format": {"enum": ["PASS", "FAIL", "NOT_AVAILABLE"]},
+        "coordinateConvention": {"enum": ["PASS", "FAIL", "NOT_AVAILABLE"]},
+        "imageBindings": {"enum": ["PASS", "FAIL", "NOT_AVAILABLE"]},
+        "pointCloudAlignment": {"enum": ["PASS", "FAIL", "NOT_RUN", "NOT_AVAILABLE"]}
+      }
+    },
+    "frames": {"type": "array"}
+  }
+}

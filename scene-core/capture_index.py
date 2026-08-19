@@ -27,7 +27,7 @@ import laspy
 import numpy as np
 
 
-FORMAT = "capture-index-v1"
+FORMAT = "capture-index-v2"
 CHUNK_POINTS = 1_000_000
 RECORD_DTYPE = np.dtype(
     [
@@ -59,7 +59,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _header_identity(source: Path) -> dict[str, object]:
+def _header_identity(source: Path, *, content_sha256: str | None = None) -> dict[str, object]:
     stat = source.stat()
     with laspy.open(source) as reader:
         header = reader.header
@@ -80,16 +80,24 @@ def _header_identity(source: Path) -> dict[str, object]:
         "pointCount": point_count,
         "pointFormat": point_format,
         "bounds": bounds,
+        "contentSha256": content_sha256 or _sha256_file(source),
     }
     identity["fingerprint"] = _canonical_hash(identity)
     return identity
 
 
-def _capture_binding(source: Path, manifest_path: Path | None, output: Path) -> dict[str, object] | None:
+def _capture_binding(
+    source: Path,
+    manifest_path: Path | None,
+    output: Path,
+    source_identity: dict[str, object],
+) -> dict[str, object] | None:
     if manifest_path is None:
         return None
     manifest_path = manifest_path.resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schemaVersion") != 3:
+        raise CaptureIndexError("CAPTURE_MANIFEST_MIGRATION_REQUIRED: rediscover the capture with manifest V3")
     capture_root = Path(str(manifest.get("captureRoot", ""))).resolve()
     recommended = manifest.get("recommended")
     point_cloud = recommended.get("pointCloud") if isinstance(recommended, dict) else None
@@ -99,9 +107,15 @@ def _capture_binding(source: Path, manifest_path: Path | None, output: Path) -> 
     expected = (capture_root / Path(relative_path)).resolve()
     if expected != source.resolve():
         raise CaptureIndexError("source LAS/LAZ does not match the capture manifest recommendation")
-    source_stat = source.stat()
-    if int(point_cloud.get("bytes", -1)) != source_stat.st_size or int(point_cloud.get("modifiedNs", -1)) != source_stat.st_mtime_ns:
+    if (
+        int(point_cloud.get("bytes", -1)) != int(source_identity["bytes"])
+        or point_cloud.get("contentSha256") != source_identity.get("contentSha256")
+    ):
         raise CaptureIndexError("capture manifest point-cloud identity is stale")
+    unit = manifest.get("captureUnits", [{}])[0]
+    adapter = unit.get("pointCloudAdapter") if isinstance(unit, dict) else None
+    if not isinstance(adapter, dict) or adapter.get("status") != "SUPPORTED":
+        raise CaptureIndexError("CAPTURE_ADAPTER_UNSUPPORTED: selected point cloud lacks a validated parser")
     resolved_output = output.resolve()
     if resolved_output == capture_root or capture_root in resolved_output.parents:
         raise CaptureIndexError("capture index output must stay outside the read-only capture root")
@@ -113,6 +127,10 @@ def _capture_binding(source: Path, manifest_path: Path | None, output: Path) -> 
         "captureManifest": str(manifest_path),
         "captureManifestSha256": _sha256_file(manifest_path),
         "relativePointCloud": relative_path,
+        "sourceContentSha256": source_identity["contentSha256"],
+        "sourceLineageId": f"source:{source_identity['contentSha256']}",
+        "sourceSetDigest": manifest.get("sourceSetDigest"),
+        "coordinateFrame": manifest.get("coordinateFrame"),
     }
 
 
@@ -152,9 +170,21 @@ def build_index(
         raise CaptureIndexError("every must be a positive integer")
 
     before = _header_identity(source)
-    binding = _capture_binding(source, capture_manifest, output)
-    bounds = before["bounds"]
-    assert isinstance(bounds, dict)
+    binding = _capture_binding(source, capture_manifest, output, before)
+    source_bounds = before["bounds"]
+    assert isinstance(source_bounds, dict)
+    coordinate_frame = binding.get("coordinateFrame") if binding else None
+    unit_to_metre = (
+        float(coordinate_frame.get("unitToMetre", 1.0))
+        if isinstance(coordinate_frame, dict)
+        else 1.0
+    )
+    if not math.isfinite(unit_to_metre) or unit_to_metre <= 0:
+        raise CaptureIndexError("CAPTURE_COORDINATE_SCALE_INVALID: unitToMetre must be finite and positive")
+    bounds = {
+        name: float(source_bounds[name]) * unit_to_metre
+        for name in ("minX", "minY", "minZ", "maxX", "maxY", "maxZ")
+    }
     origin = {
         "x": float(bounds["minX"]),
         "y": float(bounds["minY"]),
@@ -178,9 +208,9 @@ def build_index(
                     chunk = chunk[::every]
                 if len(chunk) == 0:
                     continue
-                x = np.asarray(chunk.x, dtype=np.float64)
-                y = np.asarray(chunk.y, dtype=np.float64)
-                z = np.asarray(chunk.z, dtype=np.float64)
+                x = np.asarray(chunk.x, dtype=np.float64) * unit_to_metre
+                y = np.asarray(chunk.y, dtype=np.float64) * unit_to_metre
+                z = np.asarray(chunk.z, dtype=np.float64) * unit_to_metre
                 colors = _rgb(chunk)
                 tile_x = np.floor((x - origin["x"]) / tile_size_m).astype(np.int64)
                 tile_y = np.floor((y - origin["y"]) / tile_size_m).astype(np.int64)
@@ -208,7 +238,7 @@ def build_index(
                     tile_counts[key] = tile_counts.get(key, 0) + len(records)
                     indexed_count += len(records)
 
-        after = _header_identity(source)
+        after = _header_identity(source, content_sha256=str(before["contentSha256"]))
         if after != before:
             raise CaptureIndexError("source point cloud changed while the index was being built")
         tiles = {
@@ -216,6 +246,8 @@ def build_index(
                 "path": f"tiles/tile-{key}.bin",
                 "pointCount": count,
                 "bytes": count * RECORD_DTYPE.itemsize,
+                "contentSha256": _sha256_file(tiles_root / f"tile-{key}.bin"),
+                "lineageId": f"capture-index-tile:{before['contentSha256']}:{key}",
             }
             for key, count in sorted(
                 tile_counts.items(),
@@ -226,15 +258,25 @@ def build_index(
             "format": FORMAT,
             "sourceFingerprint": before["fingerprint"],
             "captureFingerprint": binding.get("captureFingerprint") if binding else None,
+            "coordinateFrame": coordinate_frame,
+            "unitToMetre": unit_to_metre,
             "tileSizeM": tile_size_m,
             "decimation": every,
             "indexedPointCount": indexed_count,
-            "tiles": {key: value["pointCount"] for key, value in tiles.items()},
+            "tiles": {
+                key: {
+                    "pointCount": value["pointCount"],
+                    "contentSha256": value["contentSha256"],
+                }
+                for key, value in tiles.items()
+            },
         }
         manifest: dict[str, object] = {
             "format": FORMAT,
             "sourceIdentity": before,
             "captureBinding": binding,
+            "sourceCoordinateFrame": coordinate_frame,
+            "sourceUnitToMetre": unit_to_metre,
             "origin": origin,
             "bounds": bounds,
             "tileSizeM": tile_size_m,
@@ -248,6 +290,11 @@ def build_index(
             "hasColor": has_color,
             "tiles": tiles,
             "indexFingerprint": _canonical_hash(fingerprint_basis),
+            "lineage": {
+                "artifactType": "capture-index",
+                "rootContentSha256s": [before["contentSha256"]],
+                "sourceSetDigest": binding.get("sourceSetDigest") if binding else None,
+            },
         }
         (temporary / "capture-index.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -272,7 +319,7 @@ class PointQuery:
     y: np.ndarray
     z: np.ndarray
     rgb: np.ndarray
-    stats: dict[str, int]
+    stats: dict[str, int | str]
 
     @property
     def point_count(self) -> int:
@@ -289,6 +336,7 @@ class CaptureIndex:
         self.origin_y = float(origin["y"])
         self.origin_z = float(origin["z"])
         self.tile_size_m = float(manifest["tileSizeM"])
+        self._verified_tiles: set[str] = set()
 
     @classmethod
     def open(cls, root: Path, *, validate_source: bool = False) -> "CaptureIndex":
@@ -298,6 +346,8 @@ class CaptureIndex:
             raise CaptureIndexError(f"capture index manifest is missing: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("format") != FORMAT:
+            if manifest.get("format") == "capture-index-v1":
+                raise CaptureIndexError("CAPTURE_INDEX_MIGRATION_REQUIRED: rebuild the derivative index as V2")
             raise CaptureIndexError("unsupported capture index format")
         if manifest.get("recordBytes") != RECORD_DTYPE.itemsize:
             raise CaptureIndexError("capture index record layout is incompatible")
@@ -313,6 +363,9 @@ class CaptureIndex:
             expected_bytes = int(item.get("pointCount", -1)) * RECORD_DTYPE.itemsize
             if expected_bytes < 0 or path.stat().st_size != expected_bytes:
                 raise CaptureIndexError(f"capture index tile size is stale: {key}")
+            checksum = item.get("contentSha256")
+            if not isinstance(checksum, str) or len(checksum) != 64:
+                raise CaptureIndexError(f"capture index tile checksum is missing: {key}")
         index = cls(root, manifest)
         if validate_source:
             index.validate_source()
@@ -325,6 +378,21 @@ class CaptureIndex:
         source = Path(str(identity.get("path", "")))
         if not source.is_file() or _header_identity(source) != identity:
             raise CaptureIndexError("capture index source identity is stale")
+
+    def _verify_tile(self, key: str, item: dict[str, object]) -> Path:
+        path = (self.root / str(item["path"])).resolve()
+        if key not in self._verified_tiles:
+            if _sha256_file(path) != item.get("contentSha256"):
+                raise CaptureIndexError(f"CAPTURE_INDEX_TILE_CHECKSUM_MISMATCH:{key}")
+            self._verified_tiles.add(key)
+        return path
+
+    def validate_tiles(self) -> None:
+        table = self.manifest["tiles"]
+        assert isinstance(table, dict)
+        for key, item in table.items():
+            assert isinstance(item, dict)
+            self._verify_tile(str(key), item)
 
     def _tile_keys(self, min_x: float, min_y: float, max_x: float, max_y: float) -> list[str]:
         if not all(math.isfinite(value) for value in (min_x, min_y, max_x, max_y)) or min_x > max_x or min_y > max_y:
@@ -357,15 +425,22 @@ class CaptureIndex:
         for key in self._tile_keys(min_x, min_y, max_x, max_y):
             item = table[key]
             assert isinstance(item, dict)
-            records = np.fromfile(self.root / str(item["path"]), dtype=RECORD_DTYPE)
+            tile_path = self._verify_tile(key, item)
+            records = np.memmap(tile_path, dtype=RECORD_DTYPE, mode="r")
             x = records["x"].astype(np.float64) + self.origin_x
             y = records["y"].astype(np.float64) + self.origin_y
             z = records["z"].astype(np.float64) + self.origin_z
-            keep = (x >= min_x) & (x <= max_x) & (y >= min_y) & (y <= max_y)
+            epsilon = max(1e-6, self.tile_size_m * 1e-7)
+            keep = (
+                (x >= min_x - epsilon)
+                & (x <= max_x + epsilon)
+                & (y >= min_y - epsilon)
+                & (y <= max_y + epsilon)
+            )
             if z_min is not None:
-                keep &= z >= z_min
+                keep &= z >= z_min - epsilon
             if z_max is not None:
-                keep &= z <= z_max
+                keep &= z <= z_max + epsilon
             selected = np.flatnonzero(keep)
             if every > 1:
                 selected = selected[::every]
@@ -377,7 +452,11 @@ class CaptureIndex:
                 y=y[selected],
                 z=z[selected],
                 rgb=rgb.astype(np.uint8, copy=False),
-                stats={"tilesRead": 1, "pointsRead": len(records), "pointsReturned": len(selected)},
+                stats={
+                    "tilesRead": 1,
+                    "pointsRead": len(records),
+                    "pointsReturned": len(selected),
+                },
             )
 
     def query_bbox(
@@ -406,6 +485,7 @@ class CaptureIndex:
             "tilesRead": sum(batch.stats["tilesRead"] for batch in batches),
             "pointsRead": sum(batch.stats["pointsRead"] for batch in batches),
             "pointsReturned": sum(batch.stats["pointsReturned"] for batch in batches),
+            "ioMode": "mmap",
         }
         if not batches:
             empty = np.empty(0, dtype=np.float64)
@@ -448,6 +528,7 @@ def main() -> int:
     query.add_argument("--every", type=int, default=1)
     query.add_argument("--output", type=Path, help="optional compressed NPZ with x/y/z/rgb")
     query.add_argument("--validate-source", action="store_true")
+    query.add_argument("--validate-tiles", action="store_true")
     args = parser.parse_args()
 
     if args.command == "build":
@@ -468,6 +549,8 @@ def main() -> int:
     if len(zrange) != 2:
         parser.error("--zrange expects zMin,zMax")
     index = CaptureIndex.open(args.index, validate_source=args.validate_source)
+    if args.validate_tiles:
+        index.validate_tiles()
     result = index.query_bbox(*bbox, z_min=zrange[0], z_max=zrange[1], every=args.every)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

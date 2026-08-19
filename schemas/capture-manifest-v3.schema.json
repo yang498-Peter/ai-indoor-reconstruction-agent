@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-indoor-reconstruction-agent/capture-manifest-v3.schema.json",
+  "title": "Capture Manifest V3",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "captureRoot",
+    "captureFingerprint",
+    "sourceSetDigest",
+    "adapterRegistryDigest",
+    "coordinateFrame",
+    "state",
+    "captureUnits",
+    "blockedCapabilities",
+    "poseValidation"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 3},
+    "captureRoot": {"type": "string", "minLength": 1},
+    "captureFingerprint": {"$ref": "#/$defs/sha256"},
+    "sourceSetDigest": {"$ref": "#/$defs/sha256"},
+    "adapterRegistryDigest": {"$ref": "#/$defs/sha256"},
+    "coordinateFrame": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["lengthUnit", "unitToMetre", "upAxis", "reference", "referenceType"],
+      "properties": {
+        "lengthUnit": {"enum": ["metre", "foot", "us-survey-foot"]},
+        "unitToMetre": {"type": "number", "exclusiveMinimum": 0},
+        "upAxis": {"const": "Z"},
+        "reference": {"type": "string", "minLength": 1},
+        "referenceType": {"enum": ["local", "crs"]}
+      }
+    },
+    "state": {
+      "enum": [
+        "BLOCKED_NO_POINT_CLOUD",
+        "BLOCKED_MULTI_CAPTURE_ROOT",
+        "BLOCKED_AMBIGUOUS_CLOUD",
+        "BLOCKED_UNSUPPORTED_POINT_CLOUD",
+        "BLOCKED_COORDINATE_FRAME_REQUIRED",
+        "READY_GEOMETRY_ONLY"
+      ]
+    },
+    "captureUnits": {"type": "array"},
+    "blockedCapabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "poseValidation": {"type": "object"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

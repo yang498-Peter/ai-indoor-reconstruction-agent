@@ -7,11 +7,39 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
+
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+CORE_ROOT = REPO_ROOT / "scene-core"
+if str(CORE_ROOT) not in sys.path:
+    sys.path.insert(0, str(CORE_ROOT))
+
+from capture_readiness import (  # noqa: E402
+    adapter_registry,
+    canonical_hash,
+    normalize_coordinate_frame,
+    point_cloud_adapter,
+    sha256_file,
+    validate_pose_alignment,
+    validate_pose_sources,
+    write_json_atomic,
+)
 
 
 POINT_CLOUD = {".las", ".laz", ".e57", ".ply", ".pcd", ".xyz"}
 IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
-POSE_HINTS = ("pose", "trajectory", "camera", "transform", "odom", "pano")
+POSE_HINTS = (
+    "pose",
+    "trajectory",
+    "camera",
+    "transform",
+    "odom",
+    "pano",
+    "calib",
+    "intrinsic",
+    "extrinsic",
+)
 GROUP_NAMES = ("pointClouds", "images", "posesAndTransforms", "other")
 
 
@@ -31,12 +59,16 @@ def classify(path: Path) -> str:
 
 def _entry(root: Path, path: Path) -> dict[str, object]:
     stat = path.stat()
-    return {
+    entry: dict[str, object] = {
         "path": path.relative_to(root).as_posix(),
         "bytes": stat.st_size,
         "modifiedNs": stat.st_mtime_ns,
         "extension": path.suffix.lower(),
     }
+    if classify(path) != "other":
+        entry["contentSha256"] = sha256_file(path)
+        entry["lineageId"] = f"source:{entry['contentSha256']}"
+    return entry
 
 
 def _capture_key(root: Path, point_cloud: Path) -> str:
@@ -46,12 +78,17 @@ def _capture_key(root: Path, point_cloud: Path) -> str:
 
 
 def _fingerprint(root: Path, entries: list[dict[str, object]]) -> str:
-    digest = hashlib.sha256()
-    for item in sorted(entries, key=lambda value: str(value["path"])):
-        digest.update(str(item["path"]).encode("utf-8"))
-        digest.update(str(item["bytes"]).encode("ascii"))
-        digest.update(str(item["modifiedNs"]).encode("ascii"))
-    return digest.hexdigest()
+    del root
+    reconstruction_sources = [
+        {
+            "path": item["path"],
+            "bytes": item["bytes"],
+            "contentSha256": item["contentSha256"],
+        }
+        for item in entries
+        if isinstance(item.get("contentSha256"), str)
+    ]
+    return canonical_hash(sorted(reconstruction_sources, key=lambda value: str(value["path"])))
 
 
 def _select_primary_cloud(
@@ -84,7 +121,12 @@ def _summarize(groups: dict[str, list[dict[str, object]]]) -> dict[str, object]:
     }
 
 
-def build_manifest(root: Path, selected_point_cloud: str | None = None) -> dict[str, object]:
+def build_manifest(
+    root: Path,
+    selected_point_cloud: str | None = None,
+    *,
+    coordinate_frame: dict[str, object] | None = None,
+) -> dict[str, object]:
     root = root.resolve()
     if not root.is_dir():
         raise ValueError(f"capture directory does not exist: {root}")
@@ -120,9 +162,14 @@ def build_manifest(root: Path, selected_point_cloud: str | None = None) -> dict[
         )
         selected_for_unit = selected_point_cloud if len(unit_keys) == 1 else None
         primary_cloud, auxiliary_clouds = _select_primary_cloud(ordered_clouds, selected_for_unit)
+        adapter = point_cloud_adapter(root / str(primary_cloud["path"])) if primary_cloud else None
         warnings: list[str] = []
         if primary_cloud is None:
             warnings.append("Multiple plausible point clouds remain; select one explicitly before modeling.")
+        elif adapter and adapter["status"] != "SUPPORTED":
+            warnings.append(
+                f"Selected point cloud has no usable adapter: {adapter['id']} ({adapter['status']})."
+            )
         if not unit_groups["images"]:
             warnings.append("No images: geometry work may continue, but material acceptance is blocked.")
         if not unit_groups["posesAndTransforms"]:
@@ -136,11 +183,15 @@ def build_manifest(root: Path, selected_point_cloud: str | None = None) -> dict[
                 "primaryPointCloud": primary_cloud,
                 "auxiliaryPointClouds": auxiliary_clouds,
                 "pointCloudSelection": "UNAMBIGUOUS" if primary_cloud else "AMBIGUOUS",
+                "pointCloudAdapter": adapter,
                 "files": unit_groups,
                 "warnings": warnings,
             }
         )
 
+    normalized_frame, coordinate_errors = normalize_coordinate_frame(coordinate_frame)
+    pose_entries = groups["posesAndTransforms"]
+    pose_validation = validate_pose_sources(root, pose_entries)
     warnings: list[str] = []
     if not point_clouds:
         state = "BLOCKED_NO_POINT_CLOUD"
@@ -153,13 +204,19 @@ def build_manifest(root: Path, selected_point_cloud: str | None = None) -> dict[
     elif units[0]["primaryPointCloud"] is None:
         state = "BLOCKED_AMBIGUOUS_CLOUD"
         warnings.append("The selected capture unit contains multiple plausible primary point clouds.")
+    elif units[0]["pointCloudAdapter"]["status"] != "SUPPORTED":  # type: ignore[index]
+        state = "BLOCKED_UNSUPPORTED_POINT_CLOUD"
+        warnings.append("The selected point cloud is discoverable but has no validated local parser adapter.")
+    elif normalized_frame is None:
+        state = "BLOCKED_COORDINATE_FRAME_REQUIRED"
+        warnings.extend(coordinate_errors)
     else:
-        unit = units[0]
-        if unit["counts"]["images"] and unit["counts"]["posesAndTransforms"]:  # type: ignore[index]
-            state = "READY_FULL"
-        else:
-            state = "READY_GEOMETRY_ONLY"
-            warnings.extend(unit["warnings"])  # type: ignore[arg-type]
+        state = "READY_GEOMETRY_ONLY"
+        warnings.extend(units[0]["warnings"])  # type: ignore[arg-type]
+        if pose_validation["status"] == "ALIGNMENT_REQUIRED":
+            warnings.append("Pose format and image bindings pass; point-cloud alignment remains required.")
+        elif pose_validation["status"] == "FAIL":
+            warnings.append("Pose evidence failed format, coordinate-convention, or image-binding validation.")
 
     all_entries = [entries_by_path[path] for path in paths]
     if len(units) == 1:
@@ -170,9 +227,10 @@ def build_manifest(root: Path, selected_point_cloud: str | None = None) -> dict[
                 ("material-acceptance", int(selected_counts["images"]) == 0),  # type: ignore[index]
                 (
                     "posed-photo-association",
-                    int(selected_counts["posesAndTransforms"]) == 0,  # type: ignore[index]
+                    pose_validation.get("status") != "PASS",
                 ),
-                ("whole-scene-acceptance", state != "READY_FULL"),
+                ("coordinate-frame", normalized_frame is None),
+                ("whole-scene-acceptance", True),
             )
             if blocked
         ]
@@ -186,20 +244,34 @@ def build_manifest(root: Path, selected_point_cloud: str | None = None) -> dict[
         ]
 
     manifest: dict[str, object] = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "captureRoot": str(root),
         "captureFingerprint": _fingerprint(root, all_entries),
+        "sourceSetDigest": _fingerprint(root, all_entries),
+        "adapterRegistryDigest": adapter_registry()[1],
+        "coordinateFrame": normalized_frame,
         "readOnlyDiscovery": True,
         "state": state,
         "captureUnitCount": len(units),
         "captureUnits": units,
         "blockedCapabilities": blocked_capabilities,
         "sceneDomainGate": "MANUAL_REVIEW_REQUIRED",
-        "photoPoseAssociationGate": "MANUAL_REVIEW_REQUIRED",
+        "photoPoseAssociationGate": (
+            "BLOCKED_ALIGNMENT_NOT_RUN"
+            if pose_validation["status"] == "ALIGNMENT_REQUIRED"
+            else "BLOCKED_POSE_VALIDATION_FAILED"
+            if pose_validation["status"] == "FAIL"
+            else "BLOCKED_NO_POSES"
+        ),
+        "poseValidation": pose_validation,
         **_summarize(groups),
         "warnings": warnings,
     }
-    if len(units) == 1:
+    if (
+        len(units) == 1
+        and units[0]["primaryPointCloud"] is not None
+        and units[0]["pointCloudAdapter"]["status"] == "SUPPORTED"  # type: ignore[index]
+    ):
         manifest["recommended"] = {
             "pointCloud": units[0]["primaryPointCloud"],
             "images": units[0]["files"]["images"],  # type: ignore[index]
@@ -215,10 +287,20 @@ def main() -> int:
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--point-cloud", help="Exact capture-relative point-cloud path when selection is ambiguous")
+    parser.add_argument("--length-unit", choices=("metre", "foot", "us-survey-foot"))
+    parser.add_argument("--up-axis", choices=("Z",))
+    parser.add_argument("--coordinate-reference", help="Explicit local-frame name or CRS identifier")
     args = parser.parse_args()
 
     try:
-        manifest = build_manifest(args.data, args.point_cloud)
+        coordinate_frame = None
+        if args.length_unit or args.up_axis or args.coordinate_reference:
+            coordinate_frame = {
+                "lengthUnit": args.length_unit,
+                "upAxis": args.up_axis,
+                "reference": args.coordinate_reference,
+            }
+        manifest = build_manifest(args.data, args.point_cloud, coordinate_frame=coordinate_frame)
     except ValueError as error:
         parser.error(str(error))
     payload = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
@@ -227,8 +309,7 @@ def main() -> int:
         capture_root = Path(str(manifest["captureRoot"]))
         if output == capture_root or capture_root in output.parents:
             parser.error("output must be outside the read-only capture directory")
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(payload, encoding="utf-8")
+        write_json_atomic(args.output, manifest)
     else:
         print(payload, end="")
     return 2 if str(manifest["state"]).startswith("BLOCKED_") else 0
