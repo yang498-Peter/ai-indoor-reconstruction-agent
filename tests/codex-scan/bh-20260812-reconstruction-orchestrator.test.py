@@ -61,12 +61,86 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
         self.render.write_bytes(b"render-evidence")
         self.tool.write_text("raise SystemExit(0)\n", encoding="utf-8")
         loop.initialize_workflow(self.job, self.state_path)
+        self.executions = {
+            "root": self.write_identity(
+                "root", "10101010-1010-4010-8010-101010101010", "author", "author-v1"
+            ),
+            "author-west": self.write_identity(
+                "author-west", "11111111-1111-4111-8111-111111111111", "author", "author-v1"
+            ),
+            "red-team": self.write_identity(
+                "red-team", "12121212-1212-4212-8212-121212121212", "author", "author-v1"
+            ),
+            "reviewer-east": self.write_identity(
+                "reviewer-east",
+                "22222222-2222-4222-8222-222222222222",
+                "reviewer",
+                "reviewer-readonly-v1",
+                "regional",
+            ),
+            "presentation-reviewer": self.write_identity(
+                "presentation-reviewer",
+                "33333333-3333-4333-8333-333333333333",
+                "reviewer",
+                "reviewer-readonly-v1",
+                "standard",
+            ),
+            "regional-reviewer": self.write_identity(
+                "regional-reviewer",
+                "44444444-4444-4444-8444-444444444444",
+                "reviewer",
+                "reviewer-readonly-v1",
+                "regional",
+            ),
+            "global-red-team": self.write_identity(
+                "global-red-team",
+                "55555555-5555-4555-8555-555555555555",
+                "reviewer",
+                "reviewer-readonly-v1",
+                "adversarial",
+            ),
+            "root-gatekeeper": self.write_identity(
+                "root-gatekeeper",
+                "66666666-6666-4666-8666-666666666666",
+                "publisher",
+                "publisher-v1",
+            ),
+        }
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def args(self, **kwargs):
         return type("Args", (), kwargs)()
+
+    def write_identity(
+        self,
+        actor: str,
+        run_id: str,
+        role: str,
+        policy_id: str,
+        reviewer_class: str | None = None,
+    ) -> Path:
+        value = {
+            "schemaVersion": "1.0",
+            "actorId": actor,
+            "runId": run_id,
+            "role": role,
+            "provider": "orchestrator-test",
+            "model": "fixture",
+            "policyId": policy_id,
+            "toolPolicyHash": loop.execution_identity_api.policy_digest(policy_id),
+            "startedAt": datetime.now(timezone.utc).isoformat(),
+            "attestation": {
+                "issuer": "orchestrator-test",
+                "enforcementMode": "application-enforced",
+            },
+        }
+        if reviewer_class:
+            value["reviewerClass"] = reviewer_class
+        path = self.root / f"execution-{actor}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
 
     def bind(self, *names: str) -> None:
         for name in names:
@@ -97,6 +171,8 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             )
 
     def pass_stage(self, name: str, scene: bool = False, actor: str = "root") -> None:
+        if name == "author" and actor == "root":
+            actor = "author-west"
         scene_path = self.scene if scene or loop.STAGE_SPECS[name]["sceneBinding"] == "authority" else None
         scene_sha = loop.sha256_file(self.scene) if scene_path else None
         artifacts = []
@@ -131,17 +207,19 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
                     "environmentDigest": "d" * 64,
                     "randomSeed": 0,
                 },
-                "inputs": [],
+                "inputs": loop.required_upstream_input_bindings(
+                    loop.read_state(self.state_path), name
+                ),
                 "createdAt": datetime.now(timezone.utc).isoformat(),
                 "payload": payload,
             }
             if scene_sha:
-                value["inputs"].append(
-                    {
-                        "artifactType": "scene-authority",
-                        "artifactSha256": scene_sha,
-                    }
-                )
+                scene_input = {
+                    "artifactType": "scene-authority",
+                    "artifactSha256": scene_sha,
+                }
+                if scene_input not in value["inputs"]:
+                    value["inputs"].append(scene_input)
             path = self.root / f"{name}-{artifact_type}.json"
             path.write_text(
                 json.dumps(value, ensure_ascii=False, indent=2) + "\n",
@@ -152,6 +230,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor=actor,
+                execution=self.executions[actor],
                 name=name,
                 artifact=artifacts,
                 scene=scene_path,
@@ -164,6 +243,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="author-west",
+                execution=self.executions["author-west"],
                 area="west-wing",
                 severity=severity,
                 kind="missing-wall",
@@ -178,6 +258,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="author-west",
+                execution=self.executions["author-west"],
                 issue=issue_id,
                 scene=self.scene,
                 checkpoint_dir=None,
@@ -192,6 +273,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor=actor,
+                execution=self.executions.get(actor, self.executions["author-west"]),
                 issue=issue_id,
                 scene=self.scene,
                 verdict=verdict,
@@ -263,7 +345,12 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
         original = unrelated.read_bytes()
         with self.assertRaises(loop.WorkflowError):
             loop.command_restore(
-                self.args(state=self.state_path, actor="root", scene=unrelated)
+                self.args(
+                    state=self.state_path,
+                    actor="root",
+                    execution=self.executions["root"],
+                    scene=unrelated,
+                )
             )
         self.assertEqual(original, unrelated.read_bytes())
 
@@ -272,6 +359,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="author-west",
+                execution=self.executions["author-west"],
                 area="west-wing",
                 severity="P1",
                 kind="missing-wall",
@@ -285,6 +373,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="author-west",
+                    execution=self.executions["author-west"],
                     issue="I0001",
                     scene=self.scene,
                     checkpoint_dir=self.root.parent,
@@ -319,6 +408,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="reviewer-east",
+                    execution=self.executions["reviewer-east"],
                     issue=issue_id,
                     scene=self.scene,
                     verdict="PASS",
@@ -336,6 +426,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="author-west",
+                execution=self.executions["author-west"],
                 issue=issue_id,
                 scene=self.scene,
                 checkpoint_dir=None,
@@ -349,6 +440,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="author-west",
+                execution=self.executions["author-west"],
                 issue=issue_id,
                 scene=self.scene,
                 checkpoint_dir=None,
@@ -363,6 +455,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="author-west",
+                    execution=self.executions["author-west"],
                     issue=issue_id,
                     scene=self.scene,
                     checkpoint_dir=None,
@@ -374,6 +467,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="author-west",
+                execution=self.executions["author-west"],
                 issue=issue_id,
                 scene=self.scene,
                 checkpoint_dir=None,
@@ -405,6 +499,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
             self.args(
                 state=self.state_path,
                 actor="red-team",
+                execution=self.executions["red-team"],
                 area="global",
                 severity="P1",
                 kind="omission",
@@ -446,6 +541,7 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
         publish_args = self.args(
             state=self.state_path,
             actor="root-gatekeeper",
+            execution=self.executions["root-gatekeeper"],
             scene=self.scene,
             review=receipt,
             score=score,

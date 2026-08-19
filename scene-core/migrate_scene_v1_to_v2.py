@@ -9,8 +9,9 @@ ledger. Display inverse mapping: source = [x, -z].
 Doors and windows are re-hosted onto the nearest parallel wall; anything that
 cannot be hosted keeps its geometry as an explicit freeSegment node so nothing
 is silently dropped. Legacy acceptance states migrate into the ledger with
-type 'inference-basis' sources - they stay visibly legacy; any NEW acceptance
-must pass the scene_api evidence gates.
+    type 'inference-basis' sources and are demoted to candidates. Legacy actor
+    strings, missing content hashes and missing run identities cannot mint a V2
+    acceptance; every migrated claim must be re-evaluated explicitly.
 """
 
 from __future__ import annotations
@@ -62,14 +63,15 @@ def legacy_sources(structure: dict) -> list[dict]:
 
 def ledger_entry(structure: dict) -> dict:
     status = legacy_status(structure)
-    entry: dict = {"status": status, "sources": legacy_sources(structure)}
-    if status == "accepted-inferred":
-        entry["reason"] = structure.get("decision", {}).get("reason", "migrated V1 inferred completion")
-        while len(entry["sources"]) < 2:
-            entry["sources"].append({"type": "inference-basis", "note": "migrated legacy decision"})
+    entry: dict = {
+        "status": "candidate" if status.startswith("accepted") else status,
+        "sources": legacy_sources(structure),
+        "legacyDisposition": status,
+    }
+    if status.startswith("accepted"):
+        entry["reason"] = "legacy acceptance requires PR-C identity, provenance and claim re-evaluation"
     if status == "rejected":
         entry["reason"] = structure.get("decision", {}).get("reason", "migrated V1 rejection")
-    entry["reviewer"] = structure.get("evidence", {}).get("reviewer", "v1-migration")
     return entry
 
 
@@ -218,15 +220,12 @@ def migrate(v1: dict, actor: str) -> dict:
         passed = obj.get("deliveryValidation", {}).get("status") == "PASS"
         inferred = obj.get("furnitureValidation", {}).get("evidenceClass") == "accepted-inferred"
         if passed:
-            entry = {
-                "status": "accepted-inferred" if inferred else "accepted-measured",
+            scene["evidence"][node["id"]] = {
+                "status": "candidate",
                 "sources": [{"type": "inference-basis", "note": "migrated from V1 deliveryValidation"}],
-                "reviewer": "v1-migration",
+                "legacyDisposition": "accepted-inferred" if inferred else "accepted-measured",
+                "reason": "legacy furniture acceptance requires PR-C re-evaluation",
             }
-            if inferred:
-                entry["reason"] = "migrated V1 inferred furniture"
-                entry["sources"].append({"type": "inference-basis", "note": "migrated legacy decision"})
-            scene["evidence"][node["id"]] = entry
         report["items"] += 1
 
     report["candidates"] = sum(1 for entry in scene["evidence"].values() if entry.get("status") == "candidate")

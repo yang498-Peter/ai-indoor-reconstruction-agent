@@ -3,6 +3,15 @@
   "schemaVersion": "2.0",
   "artifactType": "pipeline-contract-v2",
   "stateSchemaVersion": 2,
+  "executionIdentity": {
+    "schema": "execution-identity-v1.schema.json",
+    "toolPolicies": "tool-policies-v1.json",
+    "requiredFor": [
+      "evidence", "macro-hypothesis", "seed", "author",
+      "presentation-review", "regional-review", "global-review", "publish",
+      "stage", "open-issue", "patch", "review", "restore", "invalidate"
+    ]
+  },
   "stages": [
     {
       "name": "intake",

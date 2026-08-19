@@ -35,6 +35,32 @@ def load_module(name: str, path: Path):
 
 
 api = load_module("scene_api_contract", SCENE_API_MODULE)
+identity_api = api.execution_identity_api
+
+
+def identity(actor, run_id, role, policy, reviewer_class=None):
+    value = {
+        "schemaVersion": "1.0", "actorId": actor, "runId": run_id, "role": role,
+        "provider": "publish-contract", "model": "fixture", "policyId": policy,
+        "toolPolicyHash": identity_api.policy_digest(policy),
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "attestation": {"issuer": "publish-contract", "enforcementMode": "application-enforced"},
+    }
+    if reviewer_class:
+        value["reviewerClass"] = reviewer_class
+    return value
+
+
+AUTHOR = identity(
+    "author-run", "11111111-1111-4111-8111-111111111111", "author", "author-v1",
+)
+REVIEWER = identity(
+    "reviewer-run", "22222222-2222-4222-8222-222222222222",
+    "reviewer", "reviewer-readonly-v1", "adversarial",
+)
+PUBLISHER = identity(
+    "publish-gate", "33333333-3333-4333-8333-333333333333", "publisher", "publisher-v1",
+)
 
 
 class V2PublishContractTest(unittest.TestCase):
@@ -46,6 +72,8 @@ class V2PublishContractTest(unittest.TestCase):
         self.evidence_path = self.root / "evidence" / "wall-section.bin"
         self.evidence_path.parent.mkdir(parents=True)
         self.evidence_path.write_bytes(b"deterministic-wall-section")
+        self.publisher_identity_path = self.root / "publisher-identity.json"
+        self.publisher_identity_path.write_text(json.dumps(PUBLISHER), encoding="utf-8")
         self.scene = self._make_publishable_scene()
         self.scene_path = self.root / "scene-authority.json"
         self.scene_path.write_text(
@@ -62,7 +90,7 @@ class V2PublishContractTest(unittest.TestCase):
         self.temp.cleanup()
 
     def _make_publishable_scene(self) -> dict:
-        scene = api.new_scene("synthetic-v2", 3.0, 0.0, "author-run")
+        scene = api.new_scene("synthetic-v2", 3.0, 0.0, "author-run", AUTHOR)
         level = scene["rootNodeIds"][0]
         walls = [
             ("wall_a", [0.0, 0.0], [4.0, 0.0]),
@@ -70,11 +98,9 @@ class V2PublishContractTest(unittest.TestCase):
             ("wall_c", [4.0, 3.0], [0.0, 3.0]),
             ("wall_d", [0.0, 3.0], [0.0, 0.0]),
         ]
-        source = {
-            "type": "point-measurement",
-            "path": "evidence/wall-section.bin",
-            "sha256": hashlib.sha256(b"deterministic-wall-section").hexdigest(),
-        }
+        scene["review"]["topology"]["spaces"] = [
+            {"id": "space_main", "boundaryNodeIds": [wall[0] for wall in walls]}
+        ]
         for node_id, start, end in walls:
             api.op_create_wall(
                 scene,
@@ -85,17 +111,17 @@ class V2PublishContractTest(unittest.TestCase):
                     "end": end,
                     "height": 3.0,
                     "thickness": 0.12,
+                    "execution": AUTHOR,
                 },
                 "author-run",
             )
-            scene["evidence"][node_id] = {
-                "status": "accepted-measured",
-                "sources": [dict(source)],
-                "reviewer": "reviewer-run",
-            }
-        scene["review"]["topology"]["spaces"] = [
-            {"id": "space_main", "boundaryNodeIds": [wall[0] for wall in walls]}
-        ]
+            api.op_attach_evidence(scene, self.root / "scene-authority.json", {
+                "id": node_id, "type": "point-measurement",
+                "path": "evidence/wall-section.bin", "producer": "publish-contract",
+            })
+            api.op_accept(scene, self.root / "scene-authority.json", {
+                "id": node_id, "mode": "measured", "reviewerIdentity": REVIEWER,
+            })
         api.validate_scene(scene)
         return scene
 
@@ -105,12 +131,7 @@ class V2PublishContractTest(unittest.TestCase):
             "geometryDigest": api.geometry_digest(self.scene),
             "evidenceSetDigest": api.evidence_set_digest(self.scene),
             "artifactSha256": hashlib.sha256(self.scene_path.read_bytes()).hexdigest(),
-            "reviewer": {
-                "actorId": "reviewer-run",
-                "runId": "11111111-1111-4111-8111-111111111111",
-                "role": "reviewer",
-                "provider": "deterministic-checker",
-            },
+            "reviewer": REVIEWER,
             "reviewedAt": datetime.now(timezone.utc).isoformat(),
             "p0": [],
             "p1": [],
@@ -118,6 +139,18 @@ class V2PublishContractTest(unittest.TestCase):
 
     def _evaluate(self) -> dict:
         return self.quality.evaluate_files(self.scene_path, self.review_path)
+
+    def _bind_stage_identities(self, state: dict) -> None:
+        for execution in (AUTHOR, REVIEWER):
+            state["executions"][execution["runId"]] = {
+                "identity": execution,
+                "identityDigest": identity_api.identity_digest(execution),
+            }
+        state["stages"]["author"]["executionRunId"] = AUTHOR["runId"]
+        state["stages"]["author"]["identityDigest"] = identity_api.identity_digest(AUTHOR)
+        for name in ("presentation-review", "regional-review", "global-review"):
+            state["stages"][name]["executionRunId"] = REVIEWER["runId"]
+            state["stages"][name]["identityDigest"] = identity_api.identity_digest(REVIEWER)
 
     def test_v2_scene_evaluates_without_legacy_quality_fields(self) -> None:
         report = self._evaluate()
@@ -129,6 +162,30 @@ class V2PublishContractTest(unittest.TestCase):
         self.assertNotIn("structures", report["checks"])
         self.assertNotIn("qualityLoops", report["checks"])
         self.assertEqual(set(schema["required"]), set(report))
+
+    def test_stale_claim_snapshot_is_an_explicit_quality_failure(self) -> None:
+        scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
+        scene["nodes"]["wall_a"]["end"] = [4.5, 0.0]
+        self.scene_path.write_text(
+            json.dumps(scene, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertFalse(report["checks"]["claimsCurrent"])
+        self.assertIn("ACCEPTED_CLAIMS_STALE", report["errors"])
+
+    def test_presentation_layer_cannot_pass_authority_quality_gate(self) -> None:
+        scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
+        scene["sceneLayer"] = "presentation"
+        self.scene_path.write_text(
+            json.dumps(scene, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertFalse(report["checks"]["authorityLayerValid"])
+        self.assertIn("SCENE_LAYER_NOT_AUTHORITY", report["errors"])
 
     def test_legacy_scene_requires_explicit_migration(self) -> None:
         legacy_path = self.root / "legacy-scene.json"
@@ -163,6 +220,7 @@ class V2PublishContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         state = self.loop.initialize_workflow(job_path, state_path)
+        self._bind_stage_identities(state)
         legacy_sha = hashlib.sha256(legacy_path.read_bytes()).hexdigest()
         state["currentSceneSha256"] = legacy_sha
         state["currentScenePath"] = str(legacy_path.resolve())
@@ -189,6 +247,7 @@ class V2PublishContractTest(unittest.TestCase):
             {
                 "state": state_path,
                 "actor": "publish-gate",
+                "execution": self.publisher_identity_path,
                 "scene": legacy_path,
                 "review": self.review_path,
                 "quality_report": self.review_path,
@@ -225,6 +284,7 @@ class V2PublishContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         state = self.loop.initialize_workflow(job_path, state_path)
+        self._bind_stage_identities(state)
         scene_artifact_sha = hashlib.sha256(self.scene_path.read_bytes()).hexdigest()
         state["currentSceneSha256"] = scene_artifact_sha
         state["currentScenePath"] = str(self.scene_path.resolve())
@@ -252,6 +312,7 @@ class V2PublishContractTest(unittest.TestCase):
             {
                 "state": state_path,
                 "actor": "publish-gate",
+                "execution": self.publisher_identity_path,
                 "scene": self.scene_path,
                 "review": self.review_path,
                 "quality_report": report_path,

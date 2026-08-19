@@ -18,7 +18,7 @@ The required public stages are:
 
 `schemas/pipeline-contract-v2.json` is the single machine-readable source for stage order, dependencies, capabilities, typed artifacts, evaluators, and invalidation. `intake` is initialized from the fingerprint-bound job. Later stages may pass only after their dedicated evaluator verifies prerequisites, required capabilities, and current typed artifacts. The generic `stage` command cannot write `PASS`.
 
-Pipeline state V2 binds the contract digest and uses compare-and-swap revision checks under an exclusive state lock. A V1 state fails closed with `PIPELINE_STATE_MIGRATION_REQUIRED`; run `migrate-state` explicitly. Migration preserves only the fingerprint-bound intake decision and resets downstream stages for typed reevaluation.
+Pipeline state V2 binds the contract digest and uses compare-and-swap revision checks under an exclusive state lock. A V1 state fails closed with `PIPELINE_STATE_MIGRATION_REQUIRED`; run `migrate-state` explicitly. Migration preserves the fingerprint-bound intake decision, resets downstream stages for typed reevaluation, and reopens legacy issues with `LEGACY_REVIEW_IDENTITY_RECHECK_REQUIRED` so actor-only resolutions cannot survive the contract upgrade.
 
 Each issue follows:
 
@@ -32,7 +32,7 @@ Every patch is bound to a valid semantic-scene JSON hash and copied to an immuta
 
 ## Typed artifacts and invalidation
 
-Every stage artifact is declared as `artifactType=path`. Except for the V2 scene authority, it uses the envelope in `schemas/pipeline-artifact-v1.schema.json`: job and capture identity, canonical payload digest, producer/version/git SHA, command, config and environment digests, seed, input hashes, and timestamp. Authority-bound review artifacts must include the current `scene-authority` artifact SHA in `inputs`.
+Every stage artifact is declared as `artifactType=path`. Except for the V2 scene authority, it uses the envelope in `schemas/pipeline-artifact-v1.schema.json`: job and capture identity, canonical payload digest, producer/version/git SHA, command, config and environment digests, seed, input hashes, and timestamp. Every typed artifact must bind the current direct-prerequisite artifact SHAs; authority-bound review artifacts must also include the current `scene-authority` SHA. Before a downstream evaluator runs, it re-hashes every stored prerequisite artifact instead of trusting an old PASS record.
 
 Dependency invalidation follows the contract DAG, not list position. Authority changes return `author` to `REVIEW` and invalidate presentation, regional, global, and publish stages. Presentation-only or renderer-only changes invalidate presentation review and its downstream stages without invalidating evidence, macro hypothesis, seed, or author acceptance.
 
@@ -72,7 +72,7 @@ Work one issue at a time:
 7. On failure, record the score and reopen the issue. After two non-improving attempts, change evidence, view, decomposition, or inference strategy before patching again.
 8. Pass regional review before global review. A geometry change invalidates both.
 
-Every actor uses a stable 3-64 character ASCII ID (`a-z`, digits, dot, underscore, hyphen). Every issue review must use a reviewer identity different from the patch author. P0/P1 additionally requires an independent regional or adversarial reviewer role. A reviewer inspects raw evidence before overlays and does not edit the authoritative scene during that review.
+Every actor uses a stable 3-64 character ASCII ID (`a-z`, digits, dot, underscore, hyphen). Mutation and verdict commands bind a structured execution identity from `schemas/execution-identity-v1.schema.json`; a run ID is immutable after registration. Reviewers use the checked-in `reviewer-readonly-v1` policy, and both actor and run ID must differ from the author. P0/P1 additionally requires an independent regional or adversarial reviewer class. A reviewer inspects raw evidence before overlays and cannot edit authority/evidence under that policy.
 
 ## Completion and recovery
 
@@ -89,13 +89,13 @@ Initialize through `init_reconstruction_job.py`, then use:
 python scripts/reconstruction_loop.py status --state <work>/pipeline-state.json
 python scripts/reconstruction_loop.py migrate-state --state <work>/pipeline-state.json --actor migration-owner
 python scripts/reconstruction_loop.py capability --state <state> --actor root --name deterministic-render --status AVAILABLE --reason "local Three.js renderer" --evidence <viewer-or-render-script> --receipt <independent-probe.json>
-python scripts/reconstruction_loop.py evaluate-stage --state <state> --actor evidence-owner --name evidence --artifact evidence-bundle=<evidence-bundle.json> --note "indexed evidence complete"
-python scripts/reconstruction_loop.py evaluate-stage --state <state> --actor macro-owner --name macro-hypothesis --artifact macro-hypothesis=<macro-hypothesis.json> --note "room-first topology proposed"
-python scripts/reconstruction_loop.py evaluate-stage --state <state> --actor seed-owner --name seed --scene <scene-authority.json> --note "V2 authority seeded"
-python scripts/reconstruction_loop.py open-issue --state <state> --actor author-west --area west-wing --severity P1 --kind missing-wall --target Wall17 --summary "north return is absent" --evidence raw=generated/west-raw.png
-python scripts/reconstruction_loop.py patch --state <state> --actor author-west --issue I0001 --scene <scene.json> --note "add measured return"
-python scripts/reconstruction_loop.py review --state <state> --actor reviewer-east --issue I0001 --scene <scene.json> --verdict PASS --score 92 --evidence render=generated/west-model.png --evidence raw=generated/west-raw.png --note "return follows high returns"
-python scripts/reconstruction_loop.py invalidate --state <state> --actor presentation-owner --change presentation --reason "presentation artifact changed"
+python scripts/reconstruction_loop.py evaluate-stage --state <state> --actor evidence-owner --execution <author-identity.json> --name evidence --artifact evidence-bundle=<evidence-bundle.json> --note "indexed evidence complete"
+python scripts/reconstruction_loop.py evaluate-stage --state <state> --actor macro-owner --execution <author-identity.json> --name macro-hypothesis --artifact macro-hypothesis=<macro-hypothesis.json> --note "room-first topology proposed"
+python scripts/reconstruction_loop.py evaluate-stage --state <state> --actor seed-owner --execution <author-identity.json> --name seed --scene <scene-authority.json> --note "V2 authority seeded"
+python scripts/reconstruction_loop.py open-issue --state <state> --actor author-west --execution <author-identity.json> --area west-wing --severity P1 --kind missing-wall --target Wall17 --summary "north return is absent" --evidence raw=generated/west-raw.png
+python scripts/reconstruction_loop.py patch --state <state> --actor author-west --execution <author-identity.json> --issue I0001 --scene <scene.json> --note "add measured return"
+python scripts/reconstruction_loop.py review --state <state> --actor reviewer-east --execution <reviewer-readonly-identity.json> --issue I0001 --scene <scene.json> --verdict PASS --score 92 --evidence render=generated/west-model.png --evidence raw=generated/west-raw.png --note "return follows high returns"
+python scripts/reconstruction_loop.py invalidate --state <state> --actor presentation-owner --execution <author-identity.json> --change presentation --reason "presentation artifact changed"
 ```
 
 Use `stage` only for non-PASS operational states such as `IN_PROGRESS`, `REVIEW`, `BLOCKED`, or `FAILED`. Use `evaluate-stage` for `evidence` through `global-review`; the contract dispatches a dedicated evaluator and records its code hash and artifact-set digest. `seed` and all authority-bound review stages require the current V2 scene. Use the dedicated `publish --quality-report` command only after the V2 quality evaluator passes.

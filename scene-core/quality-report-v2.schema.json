@@ -40,21 +40,31 @@
       "additionalProperties": false,
       "required": [
         "sceneV2Valid",
+        "authorityLayerValid",
         "unresolvedEvidenceCount",
         "declaredSpaceCount",
         "blockingIssueCount",
         "evidenceFilesValid",
+        "claimsCurrent",
+        "acceptedSourceDigestsCurrent",
+        "evidenceLineagesDistinct",
         "reviewIdentityValid",
+        "reviewIdentityIndependent",
         "reviewBindingCurrent",
         "reviewHasNoP0P1"
       ],
       "properties": {
         "sceneV2Valid": {"type": "boolean"},
+        "authorityLayerValid": {"type": "boolean"},
         "unresolvedEvidenceCount": {"type": "integer", "minimum": 0},
         "declaredSpaceCount": {"type": "integer", "minimum": 0},
         "blockingIssueCount": {"type": "integer", "minimum": 0},
         "evidenceFilesValid": {"type": "boolean"},
+        "claimsCurrent": {"type": "boolean"},
+        "acceptedSourceDigestsCurrent": {"type": "boolean"},
+        "evidenceLineagesDistinct": {"type": "boolean"},
         "reviewIdentityValid": {"type": "boolean"},
+        "reviewIdentityIndependent": {"type": "boolean"},
         "reviewBindingCurrent": {"type": "boolean"},
         "reviewHasNoP0P1": {"type": "boolean"}
       }

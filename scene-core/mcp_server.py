@@ -134,7 +134,9 @@ never pre-apply it here.
    rest of the level.
 5. `attach_evidence` to bind each claim to a file next to the scene; the
    sha256 is computed and stored at attach time.
-6. `accept_node` as a reviewer who is NOT the node author.
+6. `accept_node` from a registered read-only reviewer execution that is
+   independent of the author execution. P0/P1 claims require a regional or
+   adversarial reviewer class.
 7. `find_nodes` / `measure` / `get_node` / `get_scene_summary` /
    `validate_scene` to inspect; `undo` to roll back one revision.
 
@@ -147,10 +149,14 @@ validated before anything is written, so a bad op leaves the scene untouched.
   wall, and must not overlap another opening on the same wall.
 - `accept_node` with mode `measured` needs at least one evidence file that
   exists and whose sha256 still matches the ledger.
-- `accept_node` with mode `inferred` needs a reason plus at least two distinct
-  sources. Inference can never masquerade as measurement.
-- The reviewer must differ from the node author (`meta.createdBy`).
-- Editing the geometry of an accepted node demotes it back to `candidate`.
+- `accept_node` with mode `inferred` needs a reason plus at least two verified
+  files with distinct content hashes and disjoint root lineages. Repeating one
+  file or a derived crop of the same root is still one source.
+- The execution run, actor and checked-in tool policy are immutable. A reviewer
+  policy cannot mutate authority or evidence.
+- Acceptance stores a geometry/topology `claimHash`; editing the node, its host
+  wall, hosted openings or coordinate frame demotes affected claims to
+  `candidate`.
 - Every write runs structural validation first; a failure writes nothing, and
   every successful write snapshots the previous revision for `undo`.
 
@@ -181,6 +187,7 @@ def h_init_scene(scene_path: Path, actor: str, args: dict) -> dict:
         float(args.get("level_height", 3.05)),
         float(args.get("level_elevation", 0.0)),
         actor,
+        args["__execution"],
     )
     api.save_scene(scene_path, scene, actor)
     return {"dataset": args["dataset"], "levelId": api.default_level_id(scene)}
@@ -260,7 +267,7 @@ def h_open_issue(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
 
 
 def h_apply_patch(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
-    results = api.apply_ops(scene, scene_path, args["ops"], actor)
+    results = api.apply_ops(scene, scene_path, args["ops"], actor, args["__execution"])
     return {"applied": len(results), "results": results}
 
 
@@ -477,6 +484,9 @@ TOOL_SPECS: list[dict] = [
             "type": {"type": "string",
                      "description": "Evidence kind, e.g. \"high-structure-slice\", \"elevation\", \"photo\", \"inference-basis\"."},
             "path": {"type": "string", "description": "Evidence file path relative to the scene directory."},
+            "sourceRole": {"type": "string", "description": "Semantic role of this source."},
+            "producer": {"type": "string", "description": "Tool or operator that produced the evidence file."},
+            "provenanceReceipt": {"type": "string", "description": "Optional receipt binding a derived file to root input hashes."},
             "note": {"type": "string", "description": "Short note on what the source shows."},
             "allow_missing": {"type": "boolean",
                               "description": "Allow a source without an on-disk file. Default false."},
@@ -487,16 +497,14 @@ TOOL_SPECS: list[dict] = [
         "accept_node", "mutate", h_accept_node,
         "Accept a node. mode \"measured\" requires at least one attached evidence file that exists "
         "and still matches its stored sha256. mode \"inferred\" requires a reason plus at least two "
-        "sources. The reviewer must differ from the node author.",
+        "verified content hashes with disjoint root lineages. The server identity must be an "
+        "independent read-only reviewer execution.",
         {
             "id": NODE_ID,
             "mode": {"type": "string", "enum": ["measured", "inferred"], "description": "Acceptance mode."},
-            "reviewer": {"type": "string", "description": "Reviewer id; must differ from the node's meta.createdBy."},
             "reason": {"type": "string", "description": "Why the inference holds. Required for mode \"inferred\"."},
-            "allow_self": {"type": "boolean",
-                           "description": "Bypass the independent-reviewer gate. Default false; avoid it."},
         },
-        ["id", "mode", "reviewer"],
+        ["id", "mode"],
     ),
     tool(
         "reject_node", "mutate", h_reject_node,
@@ -504,10 +512,9 @@ TOOL_SPECS: list[dict] = [
         "in the evidence ledger.",
         {
             "id": NODE_ID,
-            "reviewer": {"type": "string", "description": "Reviewer id."},
             "reason": {"type": "string", "description": "Why the node is rejected."},
         },
-        ["id", "reviewer", "reason"],
+        ["id", "reason"],
     ),
     tool(
         "transition_issue", "mutate", h_transition_issue,
@@ -517,12 +524,11 @@ TOOL_SPECS: list[dict] = [
             "id": {"type": "string", "description": "Existing issue id."},
             "expectedStatus": {"type": "string", "enum": ["OPEN", "PATCHED", "FAIL"]},
             "status": {"type": "string", "enum": ["PATCHED", "RESOLVED", "FAIL"]},
-            "reviewer": {"type": "string", "description": "Independent reviewer id."},
             "reason": {"type": "string", "description": "Evidence-bounded transition reason."},
             "receiptPath": {"type": "string", "description": "Receipt relative to scene/work root."},
             "receiptSha256": {"type": "string", "description": "Optional pinned receipt SHA-256."},
         },
-        ["id", "expectedStatus", "status", "reviewer", "reason", "receiptPath"],
+        ["id", "expectedStatus", "status", "reason", "receiptPath"],
     ),
     tool(
         "open_issue", "mutate", h_open_issue,
@@ -532,11 +538,10 @@ TOOL_SPECS: list[dict] = [
             "severity": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
             "kind": {"type": "string"},
             "summary": {"type": "string"},
-            "openedBy": {"type": "string"},
             "targetNodeIds": {"type": "array", "items": {"type": "string"}},
             "area": {"type": "string"},
         },
-        ["id", "severity", "kind", "summary", "openedBy"],
+        ["id", "severity", "kind", "summary"],
     ),
     tool(
         "apply_patch", "mutate", h_apply_patch,
@@ -613,12 +618,26 @@ TOOL_SPECS: list[dict] = [
 ]
 
 TOOLS: dict[str, dict] = {spec["name"]: spec for spec in TOOL_SPECS}
+TOOL_OPERATIONS = {
+    "init_scene": "scene:create",
+    "create_wall": "scene:mutate", "add_door": "scene:mutate",
+    "add_window": "scene:mutate", "add_opening": "scene:mutate",
+    "add_item": "scene:mutate", "add_slab": "scene:mutate",
+    "add_ceiling": "scene:mutate", "add_zone": "scene:mutate",
+    "add_column": "scene:mutate", "update_node": "scene:mutate",
+    "delete_node": "scene:delete", "attach_evidence": "evidence:attach",
+    "accept_node": "pipeline:submit-verdict", "reject_node": "pipeline:submit-verdict",
+    "transition_issue": "pipeline:submit-verdict", "open_issue": "pipeline:open-issue",
+    "apply_patch": "scene:mutate", "undo": "scene:undo",
+}
 
 
-def public_tools() -> list[dict]:
+def public_tools(identity: dict | None = None) -> list[dict]:
+    operations = api.execution_identity_api.policy_operations(identity) if identity else None
     return [
         {"name": spec["name"], "description": spec["description"], "inputSchema": spec["inputSchema"]}
         for spec in TOOL_SPECS
+        if operations is None or TOOL_OPERATIONS.get(spec["name"]) in operations or spec["name"] not in TOOL_OPERATIONS
     ]
 
 
@@ -626,7 +645,7 @@ def public_tools() -> list[dict]:
 # Tool dispatch
 # ---------------------------------------------------------------------------
 
-def call_tool(scene_path: Path, actor: str, name: str, arguments: dict) -> dict:
+def call_tool(scene_path: Path, identity: dict, name: str, arguments: dict) -> dict:
     """Run one tool and return the MCP tools/call result payload.
 
     Failures come back as isError results rather than JSON-RPC errors: a gate
@@ -636,7 +655,22 @@ def call_tool(scene_path: Path, actor: str, name: str, arguments: dict) -> dict:
     spec = TOOLS.get(name)
     if spec is None:
         return error_result(f"UNKNOWN_TOOL:{name}")
-    args = arguments if isinstance(arguments, dict) else {}
+    operation = TOOL_OPERATIONS.get(name)
+    if operation and operation not in api.execution_identity_api.policy_operations(identity):
+        return error_result(f"EXECUTION_OPERATION_FORBIDDEN:{operation}")
+    args = dict(arguments) if isinstance(arguments, dict) else {}
+    args["__execution"] = identity
+    actor = identity["actorId"]
+    if name in {
+        "create_wall", "add_door", "add_window", "add_opening", "add_item",
+        "add_slab", "add_ceiling", "add_zone", "add_column",
+    }:
+        args["execution"] = identity
+    elif name in {"accept_node", "reject_node", "transition_issue"}:
+        args["reviewerIdentity"] = identity
+    elif name == "open_issue":
+        args["execution"] = identity
+        args["openedBy"] = identity["actorId"]
     try:
         if spec["mode"] == "raw":
             payload = spec["handler"](scene_path, actor, args)
@@ -671,7 +705,7 @@ def error_result(message: str) -> dict:
 # JSON-RPC 2.0 over newline-delimited stdio
 # ---------------------------------------------------------------------------
 
-def handle_message(message: dict, scene_path: Path, actor: str) -> dict | None:
+def handle_message(message: dict, scene_path: Path, identity: dict) -> dict | None:
     method = message.get("method")
     message_id = message.get("id")
     # Absent id means notification: MCP forbids a response, even for errors.
@@ -689,10 +723,10 @@ def handle_message(message: dict, scene_path: Path, actor: str) -> dict | None:
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {"tools": public_tools()}
+        result = {"tools": public_tools(identity)}
     elif method == "tools/call":
         params = message.get("params") or {}
-        result = call_tool(scene_path, actor, params.get("name"), params.get("arguments") or {})
+        result = call_tool(scene_path, identity, params.get("name"), params.get("arguments") or {})
     else:
         if is_notification:
             return None
@@ -712,7 +746,7 @@ def write_message(stream, payload: dict) -> None:
     stream.flush()
 
 
-def serve(scene_path: Path, actor: str, stdin, stdout) -> int:
+def serve(scene_path: Path, identity: dict, stdin, stdout) -> int:
     for line in stdin:
         line = line.strip()
         if not line:
@@ -731,7 +765,7 @@ def serve(scene_path: Path, actor: str, stdin, stdout) -> int:
                 "error": {"code": -32600, "message": "Invalid Request: expected a JSON object"},
             })
             continue
-        response = handle_message(message, scene_path, actor)
+        response = handle_message(message, scene_path, identity)
         if response is not None:
             write_message(stdout, response)
     return 0
@@ -740,8 +774,14 @@ def serve(scene_path: Path, actor: str, stdin, stdout) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MCP stdio server for the Semantic Scene V2 API")
     parser.add_argument("--scene", required=True, type=Path, help="scene V2 JSON path (created by init_scene)")
-    parser.add_argument("--actor", default="mcp-agent", help="stable actor id recorded on mutations")
+    parser.add_argument("--identity", required=True, type=Path, help="execution identity and checked-in tool policy")
     args = parser.parse_args(argv)
+
+    try:
+        identity = api.execution_identity_api.load_identity(args.identity.resolve())
+    except api.execution_identity_api.IdentityError as error:
+        print(str(error), file=sys.stderr)
+        return 2
 
     # The transport is a byte-exact JSON stream; a locale-dependent console
     # codec on Windows would mangle non-ASCII names before the client sees them.
@@ -749,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", newline="\n")
 
-    return serve(args.scene, args.actor, sys.stdin, sys.stdout)
+    return serve(args.scene, identity, sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":

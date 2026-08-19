@@ -75,6 +75,12 @@ class PipelineStageContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         loop.initialize_workflow(self.job, self.state_path)
+        self.author_identity = self.write_identity(
+            "author-agent", "11111111-1111-4111-8111-111111111111"
+        )
+        self.evidence_identity = self.write_identity(
+            "evidence-agent", "22222222-2222-4222-8222-222222222222"
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -82,6 +88,26 @@ class PipelineStageContractTest(unittest.TestCase):
     @staticmethod
     def args(**kwargs):
         return type("Args", (), kwargs)()
+
+    def write_identity(self, actor: str, run_id: str) -> Path:
+        value = {
+            "schemaVersion": "1.0",
+            "actorId": actor,
+            "runId": run_id,
+            "role": "author",
+            "provider": "stage-contract-test",
+            "model": "fixture",
+            "policyId": "author-v1",
+            "toolPolicyHash": loop.execution_identity_api.policy_digest("author-v1"),
+            "startedAt": datetime.now(timezone.utc).isoformat(),
+            "attestation": {
+                "issuer": "stage-contract-test",
+                "enforcementMode": "application-enforced",
+            },
+        }
+        path = self.root / f"execution-{actor}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
 
     def artifact(
         self,
@@ -105,6 +131,21 @@ class PipelineStageContractTest(unittest.TestCase):
             },
             "fixture": artifact_type,
         }
+        candidate_stages = [
+            stage["name"]
+            for stage in loop.PIPELINE_CONTRACT["stages"]
+            if artifact_type in stage["requiredArtifacts"]
+        ]
+        stage_name = next(
+            (
+                name for name in candidate_stages
+                if all(
+                    loop.read_state(self.state_path)["stages"][dependency]["status"] == "PASS"
+                    for dependency in loop.STAGE_SPECS[name]["dependsOn"]
+                )
+            ),
+            candidate_stages[0] if candidate_stages else "evidence",
+        )
         value = {
             "schemaVersion": "1.0",
             "artifactType": artifact_type,
@@ -120,17 +161,19 @@ class PipelineStageContractTest(unittest.TestCase):
                 "environmentDigest": "d" * 64,
                 "randomSeed": 0,
             },
-            "inputs": [],
+            "inputs": loop.required_upstream_input_bindings(
+                loop.read_state(self.state_path), stage_name
+            ),
             "createdAt": datetime.now(timezone.utc).isoformat(),
             "payload": payload,
         }
         if scene_sha:
-            value["inputs"].append(
-                {
-                    "artifactType": "scene-authority",
-                    "artifactSha256": scene_sha,
-                }
-            )
+            scene_input = {
+                "artifactType": "scene-authority",
+                "artifactSha256": scene_sha,
+            }
+            if scene_input not in value["inputs"]:
+                value["inputs"].append(scene_input)
         path = self.root / f"{artifact_type}.json"
         path.write_text(
             json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -166,6 +209,7 @@ class PipelineStageContractTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="author-agent",
+                    execution=self.author_identity,
                     name="evidence",
                     status="PASS",
                     artifact=[],
@@ -182,6 +226,7 @@ class PipelineStageContractTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="evidence-agent",
+                    execution=self.evidence_identity,
                     name="evidence",
                     artifact=[],
                     scene=None,
@@ -196,6 +241,7 @@ class PipelineStageContractTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="evidence-agent",
+                    execution=self.evidence_identity,
                     name="evidence",
                     artifact=[f"macro-hypothesis={wrong}"],
                     scene=None,
@@ -215,6 +261,7 @@ class PipelineStageContractTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="evidence-agent",
+                    execution=self.evidence_identity,
                     name="evidence",
                     artifact=[f"evidence-bundle={failed}"],
                     scene=None,
@@ -222,6 +269,28 @@ class PipelineStageContractTest(unittest.TestCase):
                 )
             )
         self.assertEqual(caught.exception.code, "STAGE_ARTIFACT_CHECK_FAILED")
+
+    def test_typed_artifact_must_bind_direct_prerequisite_artifacts(self) -> None:
+        evidence = self.artifact("evidence-bundle")
+        value = json.loads(evidence.read_text(encoding="utf-8"))
+        value["inputs"] = []
+        evidence.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaises(loop.WorkflowError) as caught:
+            loop.command_evaluate_stage(
+                self.args(
+                    state=self.state_path,
+                    actor="evidence-agent",
+                    execution=self.evidence_identity,
+                    name="evidence",
+                    artifact=[f"evidence-bundle={evidence}"],
+                    scene=None,
+                    note="must fail on missing intake binding",
+                )
+            )
+        self.assertEqual(
+            caught.exception.code,
+            "TYPED_ARTIFACT_PREREQUISITE_BINDING_STALE",
+        )
 
     def test_authority_and_presentation_changes_follow_invalidation_dag(self) -> None:
         state = loop.read_state(self.state_path)
@@ -275,10 +344,47 @@ class PipelineStageContractTest(unittest.TestCase):
                 self.args(
                     state=self.state_path,
                     actor="evidence-agent",
+                    execution=self.evidence_identity,
                     name="evidence",
                     artifact=[f"evidence-bundle={evidence}"],
                     scene=None,
                     note="stale prerequisite must fail",
+                )
+            )
+        self.assertEqual(
+            caught.exception.code,
+            "STAGE_PREREQUISITE_INCOMPLETE_OR_STALE",
+        )
+
+    def test_modified_prerequisite_artifact_bytes_block_downstream_stage(self) -> None:
+        state = loop.read_state(self.state_path)
+        state["capabilities"]["point-cloud-sections"]["status"] = "AVAILABLE"
+        loop.event(state, "contract-fixture", "enable-capability", {})
+        loop.save_state(self.state_path, state)
+        evidence = self.artifact("evidence-bundle")
+        loop.command_evaluate_stage(
+            self.args(
+                state=self.state_path,
+                actor="evidence-agent",
+                execution=self.evidence_identity,
+                name="evidence",
+                artifact=[f"evidence-bundle={evidence}"],
+                scene=None,
+                note="bind current evidence",
+            )
+        )
+        evidence.write_text('{"tampered":true}\n', encoding="utf-8")
+        macro = self.artifact("macro-hypothesis")
+        with self.assertRaises(loop.WorkflowError) as caught:
+            loop.command_evaluate_stage(
+                self.args(
+                    state=self.state_path,
+                    actor="evidence-agent",
+                    execution=self.evidence_identity,
+                    name="macro-hypothesis",
+                    artifact=[f"macro-hypothesis={macro}"],
+                    scene=None,
+                    note="must fail on stale prerequisite bytes",
                 )
             )
         self.assertEqual(
@@ -301,6 +407,13 @@ class PipelineStageContractTest(unittest.TestCase):
         ]
         legacy["stages"].pop("macro-hypothesis")
         legacy["stages"].pop("presentation-review")
+        legacy["issues"] = [{
+            "id": "I0099",
+            "status": "RESOLVED",
+            "severity": "P1",
+            "summary": "legacy actor-only review",
+            "resolvedBy": "legacy-reviewer",
+        }]
         self.state_path.write_text(
             json.dumps(legacy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
@@ -318,6 +431,13 @@ class PipelineStageContractTest(unittest.TestCase):
         self.assertEqual(migrated["stages"]["evidence"]["status"], "PENDING")
         self.assertEqual(migrated["stages"]["macro-hypothesis"]["status"], "PENDING")
         self.assertEqual(migrated["stages"]["seed"]["status"], "PENDING")
+        self.assertEqual(migrated["issues"][0]["status"], "OPEN")
+        self.assertEqual(migrated["issues"][0]["legacyStatus"], "RESOLVED")
+        self.assertTrue(migrated["issues"][0]["identityRecheckRequired"])
+        self.assertEqual(
+            migrated["issues"][0]["migrationReason"],
+            "LEGACY_REVIEW_IDENTITY_RECHECK_REQUIRED",
+        )
 
 
 if __name__ == "__main__":

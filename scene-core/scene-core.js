@@ -257,7 +257,69 @@ export function isSceneV2(raw) {
 }
 
 function statusOf(raw, nodeId) {
-  return raw.evidence?.[nodeId]?.status || 'candidate';
+  const entry = raw.evidence?.[nodeId];
+  const status = entry?.status || 'candidate';
+  if (!isAccepted(status)) return status;
+  if (raw.sceneLayer === 'hypothesis' || raw.sceneLayer === 'presentation') return status;
+  const digest = /^[0-9a-f]{64}$/;
+  const reviewer = entry?.reviewer;
+  const acceptanceContractPresent = (
+    digest.test(entry?.claimHash || '')
+    && digest.test(entry?.acceptedSourceDigest || '')
+    && reviewer
+    && typeof reviewer === 'object'
+    && typeof reviewer.actorId === 'string'
+    && typeof reviewer.runId === 'string'
+    && entry.claimSnapshot
+    && canonicalJson(entry.claimSnapshot) === canonicalJson(sceneClaimPayload(raw, nodeId))
+  );
+  return acceptanceContractPresent ? status : 'candidate';
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function claimNodePayload(node) {
+  return Object.fromEntries(Object.entries(node || {}).filter(([key]) => key !== 'meta'));
+}
+
+export function sceneClaimPayload(raw, nodeId) {
+  const node = raw.nodes?.[nodeId];
+  if (!node) return null;
+  const dependencyClaims = [];
+  const seen = new Set();
+  let parentId = node.parentId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = raw.nodes?.[parentId];
+    if (!parent) break;
+    const claim = claimNodePayload(parent);
+    delete claim.children;
+    dependencyClaims.push({ nodeId: parentId, claim });
+    parentId = parent.parentId;
+  }
+  const hostedChildrenClaims = node.type === 'wall'
+    ? [...(node.children || [])].sort()
+      .map((childId) => raw.nodes?.[childId])
+      .filter((child) => child && ['door', 'window', 'opening'].includes(child.type))
+      .map((child) => ({ nodeId: child.id, claim: claimNodePayload(child) }))
+    : [];
+  const topologyClaims = (raw.review?.topology?.spaces || [])
+    .filter((space) => (space.boundaryNodeIds || []).includes(nodeId));
+  return {
+    schemaVersion: raw.schemaVersion,
+    coordinateFrame: raw.coordinateFrame,
+    nodeId,
+    nodeClaim: claimNodePayload(node),
+    dependencyClaims,
+    hostedChildrenClaims,
+    topologyClaims,
+  };
 }
 
 function isAccepted(status) {

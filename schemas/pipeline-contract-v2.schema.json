@@ -4,12 +4,28 @@
   "title": "Indoor reconstruction pipeline contract V2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schemaVersion", "artifactType", "stateSchemaVersion", "stages", "changeInvalidation"],
+  "required": [
+    "$schema", "schemaVersion", "artifactType", "stateSchemaVersion",
+    "executionIdentity", "stages", "changeInvalidation"
+  ],
   "properties": {
     "$schema": {"type": "string", "minLength": 1},
     "schemaVersion": {"const": "2.0"},
     "artifactType": {"const": "pipeline-contract-v2"},
     "stateSchemaVersion": {"const": 2},
+    "executionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "toolPolicies", "requiredFor"],
+      "properties": {
+        "schema": {"const": "execution-identity-v1.schema.json"},
+        "toolPolicies": {"const": "tool-policies-v1.json"},
+        "requiredFor": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string"}
+        }
+      }
+    },
     "stages": {
       "type": "array",
       "minItems": 1,
