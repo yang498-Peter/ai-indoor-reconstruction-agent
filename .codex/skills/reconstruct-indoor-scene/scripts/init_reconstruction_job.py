@@ -8,12 +8,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from discover_capture import build_manifest
+from discover_capture import build_manifest, write_json_atomic
 from reconstruction_loop import initialize_workflow
 
 
 def write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_atomic(path, value)
 
 
 def main() -> int:
@@ -22,6 +22,9 @@ def main() -> int:
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--scaffold", type=Path, default=Path("prototypes/litereality-three-demo"))
     parser.add_argument("--point-cloud", help="Exact capture-relative point-cloud path when discovery is ambiguous")
+    parser.add_argument("--length-unit", choices=("metre", "foot", "us-survey-foot"))
+    parser.add_argument("--up-axis", choices=("Z",))
+    parser.add_argument("--coordinate-reference", help="Explicit local-frame name or CRS identifier")
     parser.add_argument(
         "--scene-domain",
         choices=("indoor", "outdoor", "mixed", "unknown"),
@@ -37,7 +40,14 @@ def main() -> int:
         parser.error(f"capture directory does not exist: {data}")
     if data == work or data in work.parents:
         parser.error("work directory must not be the capture directory or one of its children")
-    manifest = build_manifest(data, args.point_cloud)
+    coordinate_frame = None
+    if args.length_unit or args.up_axis or args.coordinate_reference:
+        coordinate_frame = {
+            "lengthUnit": args.length_unit,
+            "upAxis": args.up_axis,
+            "reference": args.coordinate_reference,
+        }
+    manifest = build_manifest(data, args.point_cloud, coordinate_frame=coordinate_frame)
     discovery_state = str(manifest["state"])
     capture_fingerprint = str(manifest["captureFingerprint"])
     capture_id = capture_fingerprint[:16]
@@ -61,6 +71,12 @@ def main() -> int:
     pipeline_path = work / "pipeline-state.json"
     if job_path.exists():
         existing = json.loads(job_path.read_text(encoding="utf-8"))
+        if manifest_path.is_file():
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if existing_manifest.get("schemaVersion") != 3:
+                parser.error(
+                    "CAPTURE_MANIFEST_MIGRATION_REQUIRED: use a fresh work directory and rediscover V3 inputs"
+                )
         if existing.get("captureFingerprint") != capture_fingerprint:
             parser.error("work directory belongs to a different capture fingerprint")
         if not pipeline_path.exists():
@@ -81,6 +97,9 @@ def main() -> int:
         "workRoot": str(work),
         "scaffold": str(scaffold),
         "captureFingerprint": capture_fingerprint,
+        "sourceSetDigest": manifest["sourceSetDigest"],
+        "coordinateFrame": manifest["coordinateFrame"],
+        "adapterRegistryDigest": manifest["adapterRegistryDigest"],
         "captureManifest": str(manifest_path),
         "pipelineState": str(pipeline_path),
         "sceneDomain": args.scene_domain,

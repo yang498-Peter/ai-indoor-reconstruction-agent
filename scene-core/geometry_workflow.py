@@ -19,6 +19,7 @@ import tempfile
 from typing import Any
 
 from capture_index import CaptureIndex, CaptureIndexError, build_index
+from capture_readiness import canonical_hash, validate_pose_alignment
 from indexed_pointcloud_evidence import render_overview
 from pointcloud_scene_metrics import evaluate_scene
 from structural_proposals import build_proposals
@@ -40,14 +41,24 @@ def _atomic_json(path: Path, value: object) -> None:
         raise
 
 
-def _pose_gate(capture_manifest: Path | None) -> tuple[str, int]:
+def _pose_gate(capture_manifest: Path | None, index: CaptureIndex) -> dict[str, Any]:
     if capture_manifest is None:
-        return "NOT_RUN_NO_CAPTURE_MANIFEST", 0
+        return {
+            "schemaVersion": "1.0",
+            "artifactType": "pose-validation",
+            "status": "NOT_AVAILABLE",
+            "sourceSetDigest": canonical_hash([]),
+            "checks": {
+                "format": "NOT_AVAILABLE",
+                "coordinateConvention": "NOT_AVAILABLE",
+                "imageBindings": "NOT_AVAILABLE",
+                "pointCloudAlignment": "NOT_AVAILABLE",
+            },
+            "frames": [],
+            "errors": ["CAPTURE_MANIFEST_REQUIRED_FOR_POSE_VALIDATION"],
+        }
     manifest = json.loads(capture_manifest.read_text(encoding="utf-8"))
-    recommended = manifest.get("recommended")
-    poses = recommended.get("posesAndTransforms") if isinstance(recommended, dict) else None
-    pose_count = len(poses) if isinstance(poses, list) else 0
-    return ("NOT_RUN" if pose_count else "BLOCKED_NO_POSES"), pose_count
+    return validate_pose_alignment(manifest, index)
 
 
 def prepare_workspace(
@@ -93,6 +104,7 @@ def prepare_workspace(
             capture_manifest=capture_manifest,
         )
         index = CaptureIndex.open(index_root, validate_source=True)
+        index.validate_tiles()
         evidence_root = temporary / "evidence"
         evidence = render_overview(
             index,
@@ -102,6 +114,11 @@ def prepare_workspace(
             every=overview_every,
         )
         evidence["index"] = str(final_index)
+        evidence["lineage"] = {
+            "artifactType": "overview-evidence",
+            "captureIndexFingerprint": index_manifest["indexFingerprint"],
+            "rootContentSha256s": [index_manifest["sourceIdentity"]["contentSha256"]],
+        }
         _atomic_json(evidence_root / "evidence-manifest.json", evidence)
 
         wall_height = ceiling_z - floor_z
@@ -115,9 +132,17 @@ def prepare_workspace(
             max_points=proposal_max_points,
         )
         proposals["index"] = str(final_index)
+        proposals["lineage"] = {
+            "artifactType": "structural-proposals",
+            "captureIndexFingerprint": index_manifest["indexFingerprint"],
+            "rootContentSha256s": [index_manifest["sourceIdentity"]["contentSha256"]],
+        }
         _atomic_json(temporary / "structural-proposals.json", proposals)
 
-        pose_status, pose_count = _pose_gate(capture_manifest)
+        pose_report = _pose_gate(capture_manifest, index)
+        _atomic_json(temporary / "pose-validation.json", pose_report)
+        pose_status = pose_report["status"]
+        pose_count = len(pose_report.get("frames", []))
         workflow: dict[str, Any] = {
             "schemaVersion": 1,
             "kind": "geometry-workflow",
@@ -139,6 +164,7 @@ def prepare_workspace(
                 "captureIndex": "capture-index/capture-index.json",
                 "overviewEvidence": "evidence/evidence-manifest.json",
                 "structuralProposals": "structural-proposals.json",
+                "poseValidation": "pose-validation.json",
                 "authorityScene": "NOT_CREATED",
                 "pointcloudSceneMetrics": "NOT_RUN",
             },
@@ -155,6 +181,16 @@ def prepare_workspace(
                 "publication": "BLOCKED",
             },
             "poseArtifactCount": pose_count,
+            "lineage": {
+                "sourceContentSha256": index_manifest["sourceIdentity"]["contentSha256"],
+                "sourceSetDigest": (
+                    index_manifest.get("captureBinding", {}).get("sourceSetDigest")
+                    if isinstance(index_manifest.get("captureBinding"), dict)
+                    else None
+                ),
+                "captureIndexFingerprint": index_manifest["indexFingerprint"],
+                "poseValidationDigest": canonical_hash(pose_report),
+            },
             "modelPolicy": {
                 "defaultGeometryAuthority": "indexed local LiDAR",
                 "remoteModelApi": "NOT_USED",

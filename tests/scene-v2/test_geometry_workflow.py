@@ -11,8 +11,13 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "scene-core"
+SKILL_SCRIPTS = ROOT / ".codex" / "skills" / "reconstruct-indoor-scene" / "scripts"
 if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
+if str(SKILL_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SKILL_SCRIPTS))
+
+import discover_capture
 
 
 def load_support():
@@ -116,6 +121,56 @@ class GeometryWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(report["status"], "NOT_RUN")
         self.assertIn("no-accepted-measured-walls", report["hardGateFailures"])
+
+    def test_prepare_writes_a_hash_bound_pose_alignment_artifact(self):
+        image = self.capture_root / "frame.jpg"
+        image.write_bytes(b"jpeg-fixture")
+        transforms = {
+            "camera_model": {
+                "width": 100,
+                "height": 100,
+                "fl_x": 50.0,
+                "fl_y": 50.0,
+                "cx": 50.0,
+                "cy": 50.0,
+            },
+            "frames": [
+                {
+                    "file_path": "frame.jpg",
+                    "transform_matrix": [
+                        [1.0, 0.0, 0.0, self.origin_x + 1.0],
+                        [0.0, 1.0, 0.0, self.origin_y + 1.0],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                }
+            ],
+        }
+        (self.capture_root / "transforms.json").write_text(json.dumps(transforms), encoding="utf-8")
+        manifest = discover_capture.build_manifest(
+            self.capture_root,
+            coordinate_frame={"lengthUnit": "metre", "upAxis": "Z", "reference": "local-test"},
+        )
+        manifest_path = self.derivative_root / "capture-manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        prepared = workflow.prepare_workspace(
+            self.las,
+            self.workspace,
+            floor_z=0.0,
+            ceiling_z=2.8,
+            capture_manifest=manifest_path,
+            tile_size_m=2.0,
+            overview_cell_m=0.10,
+            proposal_cell_m=0.04,
+            proposal_max_points=100_000,
+        )
+        pose_path = self.workspace / "pose-validation.json"
+        pose = json.loads(pose_path.read_text(encoding="utf-8"))
+        self.assertEqual(prepared["gates"]["photoPoseValidation"], "PASS")
+        self.assertEqual(pose["checks"]["pointCloudAlignment"], "PASS")
+        self.assertEqual(pose["inputs"][1]["payloadDigest"], prepared["indexFingerprint"])
+        self.assertEqual(prepared["lineage"]["sourceSetDigest"], manifest["sourceSetDigest"])
 
 
 if __name__ == "__main__":

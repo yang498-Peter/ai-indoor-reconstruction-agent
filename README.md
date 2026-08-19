@@ -29,8 +29,16 @@ python -m venv .venv
 ```powershell
 python .\.codex\skills\reconstruct-indoor-scene\scripts\discover_capture.py `
   --data 'X:\captures\capture-001' `
+  --length-unit metre `
+  --up-axis Z `
+  --coordinate-reference local-scanner-frame `
   --output '.\outputs\capture-001\capture-manifest.json'
 ```
+
+发现器只会把 checked-in adapter registry 中有真实解析器的点云标记为可用。V3 manifest
+按内容而不是 mtime 绑定点云、图片和 pose；即使 pose 格式和图片路径通过，也必须再用
+`scene-core\capture_readiness.py validate-pose` 对 V2 CaptureIndex 做空间对齐，才能启用
+posed-photo association。
 
 浏览器打开：
 

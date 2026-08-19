@@ -16,6 +16,19 @@ Review State（还有什么没闭环）
 权威坐标是源平面米制（x, y，Z-up）。显示映射只存在一处（`scene-core.js`）：
 `display = [x, elevation, -y]`。
 
+## Capture 输入与索引契约
+
+- `capture-manifest-v3` 必须绑定 checked-in adapter registry、显式源单位、Z-up 与 local/CRS reference；发现到文件不等于存在可执行 parser；
+- reconstruction source fingerprint 使用文件内容 SHA-256，不使用 mtime 充当内容身份；
+- CaptureIndex V2 将 foot/us-survey-foot 源坐标规范化为米，保留源 frame 与比例，tile 使用内容校验和并通过 mmap 查询；
+- `transforms.json` 先过刚体 camera-to-world 格式、精确图片绑定，再与当前 CaptureIndex 做空间对齐；只有 hash-bound `pose-validation` 四项全部 PASS 才允许 posed-photo association；
+- 旧 `capture-index-v1` 是可重建派生物，稳定返回 `CAPTURE_INDEX_MIGRATION_REQUIRED`；旧 capture manifest 需重新 discovery，不允许手改版本或补 hash。
+
+```powershell
+python scene-core\capture_readiness.py adapters
+python scene-core\capture_readiness.py validate-pose --manifest work\capture-manifest.json --index work\capture-index --output work\pose-validation.json
+```
+
 ## 文件
 
 | 文件 | 职责 |
