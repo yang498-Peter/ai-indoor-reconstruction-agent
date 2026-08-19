@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -74,7 +75,7 @@ class GeometryWorkflowTest(unittest.TestCase):
 
         proposals = json.loads((self.workspace / "structural-proposals.json").read_text(encoding="utf-8"))
         self.assertTrue(all(item["status"] == "candidate" for item in proposals["wallCandidates"]))
-        self.assertEqual(proposals["index"], str(self.workspace / "capture-index"))
+        self.assertTrue(os.path.samefile(proposals["index"], self.workspace / "capture-index"))
 
         scene = support.scene_api.new_scene("workflow-room", 2.8, 0.0, "reviewer-a")
         level = support.scene_api.default_level_id(scene)
