@@ -29,6 +29,7 @@ jobs:
       - run: python tests/scene-v2/test_degraded_geometry_services.py
       - run: python tests/scene-v2/test_opening_candidates.py
       - run: python tests/scene-v2/test_wall_graph_adjust.py
+      - run: python tests/scene-v2/test_candidate_topology.py
       - run: python tests/scene-v2/test_fit_service.py
       - run: python tests/scene-v2/test_level_survey.py
       - run: python tests/scene-v2/test_photo_projection.py

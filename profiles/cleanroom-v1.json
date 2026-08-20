@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "cleanroom-v1",
+  "description": "Explicit clean-room profile for repeated glazing bays and long parallel facade bands.",
+  "explicitOptInRequired": true,
+  "manhattanHardConstraint": false,
+  "heuristics": [
+    "repeated-glazing-bays",
+    "long-parallel-facade-bands",
+    "weak-return-glass-review"
+  ],
+  "thresholds": {
+    "continuityAngleDeg": 2.5,
+    "continuityOffsetM": 0.07,
+    "continuityGapM": 0.16,
+    "zoneRadiusM": 10.0,
+    "axisToleranceDeg": 5.0,
+    "duplicateOffsetM": 0.05,
+    "duplicateOverlapRatio": 0.75,
+    "topologySnapM": 0.15,
+    "minRoomAreaM2": 0.8,
+    "beamWidth": 6
+  },
+  "weights": {
+    "dataSupport": 1.0,
+    "dataLength": 0.18,
+    "residual": 1.0,
+    "complexity": 1.30,
+    "axisAlignment": 0.24,
+    "junction": 0.12,
+    "closure": 1.8,
+    "duplicate": 5.5,
+    "unexplained": 0.85
+  }
+}

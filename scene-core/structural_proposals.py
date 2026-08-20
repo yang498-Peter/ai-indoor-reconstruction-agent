@@ -35,6 +35,71 @@ def _point(value: np.ndarray) -> list[float]:
     return [round(float(value[0]), 6), round(float(value[1]), 6)]
 
 
+def _offset_line(line: dict[str, list[float]], offset_m: float) -> dict[str, list[float]]:
+    start = np.asarray(line["start"], dtype=np.float64)
+    end = np.asarray(line["end"], dtype=np.float64)
+    direction = end - start
+    direction /= np.linalg.norm(direction)
+    normal = np.asarray([-direction[1], direction[0]], dtype=np.float64)
+    return {"start": _point(start + normal * offset_m), "end": _point(end + normal * offset_m)}
+
+
+def _wall_hypothesis(candidate: dict[str, object]) -> dict[str, object]:
+    """Expose candidate geometry without laundering one observed face into a centreline."""
+    hypothesis_id = f"hypothesis:{candidate['id']}"
+    raw = candidate["rawCenterline"]
+    assert isinstance(raw, dict)
+    thickness = float(candidate["thicknessM"])
+    wall_mode = str(candidate["wallMode"])
+    if wall_mode == "single-face":
+        alternatives = [
+            {
+                "id": f"{hypothesis_id}:negative",
+                "side": "negative",
+                "centerline": _offset_line(raw, -thickness * 0.5),
+            },
+            {
+                "id": f"{hypothesis_id}:positive",
+                "side": "positive",
+                "centerline": _offset_line(raw, thickness * 0.5),
+            },
+        ]
+        authority_eligibility = "inferred-only-until-corroborated"
+    else:
+        alternatives = [{"id": f"{hypothesis_id}:center", "side": "paired", "centerline": raw}]
+        authority_eligibility = "measurement-eligible-after-independent-review"
+    confidence = float(candidate.get("confidence", 0.0))
+    confidence_band = "high" if confidence >= 0.85 else "medium" if confidence >= 0.55 else "low"
+    return {
+        "hypothesisId": hypothesis_id,
+        "sourceCandidateId": candidate["id"],
+        "status": "candidate",
+        "wallMode": wall_mode,
+        "sourceObservationIds": list(candidate.get("sourceFaceIds", [])),
+        "observedFaceLine": raw if wall_mode == "single-face" else None,
+        "centerlineAlternatives": alternatives,
+        "thicknessM": thickness,
+        "thicknessDistribution": {
+            "medianM": thickness,
+            "minM": thickness,
+            "maxM": thickness,
+            "source": "paired-faces" if wall_mode == "paired-faces" else "versioned-profile-prior",
+        },
+        "lengthM": candidate["lengthM"],
+        "supportPointCount": candidate["supportPointCount"],
+        "fitResidualP50M": candidate["fitResidualP50M"],
+        "fitResidualP90M": candidate["fitResidualP90M"],
+        "confidenceBand": confidence_band,
+        "rawFeatures": {
+            "legacyConfidence": candidate.get("confidence"),
+            "cavityPointRatio": candidate.get("cavityPointRatio"),
+            "faceColorDeltaNorm": candidate.get("faceColorDeltaNorm"),
+        },
+        "authorityEligibility": authority_eligibility,
+        "authorityRule": "hypothesis remains a candidate until an Agent/reviewer transaction",
+    }
+
+
 @dataclass(frozen=True)
 class LineObservation:
     start: np.ndarray
@@ -493,7 +558,7 @@ def build_proposals(
             f"({point_query.point_count} < 40); no automated proposals were generated"
         )
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "kind": "structural-proposals",
             "status": "DEGRADED",
             "degradationReason": reason,
@@ -509,7 +574,13 @@ def build_proposals(
             "raster": None,
             "axisFamilies": [],
             "faceObservations": [],
+            "wallHypotheses": [],
             "wallCandidates": [],
+            "observationHypothesisContract": {
+                "observationsAreMeasuredFaces": True,
+                "hypothesesRemainCandidates": True,
+                "singleFaceRequiresTwoAlternatives": True,
+            },
             "warnings": [reason],
         }
     xy = np.column_stack((point_query.x, point_query.y))
@@ -660,8 +731,26 @@ def build_proposals(
         warnings.append("no parallel wall-face pairs were found; all thicknesses remain single-face defaults")
     if len(families) < 2:
         warnings.append("fewer than two dominant axis families were found")
+    face_observations: list[dict[str, object]] = []
+    for observation in observations:
+        row = observation.as_dict()
+        min_xy = np.minimum(observation.start, observation.end) - 0.10
+        max_xy = np.maximum(observation.start, observation.end) + 0.10
+        row.update(
+            {
+                "alongSupportIntervalsM": [[0.0, round(observation.length, 5)]],
+                "verticalSupportIntervalsM": [[band_min_m, band_max_m]],
+                "sourceTileIds": index._tile_keys(  # noqa: SLF001 - lineage needs exact index tiles
+                    float(min_xy[0]), float(min_xy[1]), float(max_xy[0]), float(max_xy[1])
+                ),
+                "densityPointsPerM": round(observation.support_count / max(observation.length, 1e-6), 4),
+                "incidenceStats": {"status": "NOT_AVAILABLE"},
+            }
+        )
+        face_observations.append(row)
+    wall_hypotheses = [_wall_hypothesis(candidate) for candidate in candidates]
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "structural-proposals",
         "status": "DEGRADED" if degraded_cell_m is not None else "CANDIDATES_ONLY",
         "degradationReason": degradation_reason,
@@ -676,7 +765,15 @@ def build_proposals(
         },
         "raster": {"originX": min_x, "originY": max_y, "widthPx": width, "heightPx": height, "cellM": effective_cell_m},
         "axisFamilies": families,
-        "faceObservations": [item.as_dict() for item in observations],
+        "faceObservations": face_observations,
+        "wallHypotheses": wall_hypotheses,
+        "observationHypothesisContract": {
+            "observationsAreMeasuredFaces": True,
+            "hypothesesRemainCandidates": True,
+            "singleFaceRequiresTwoAlternatives": True,
+        },
+        # Compatibility view for the existing clean-room profile and older
+        # reviewers.  New global topology code consumes wallHypotheses.
         "wallCandidates": candidates,
         "warnings": warnings,
     }
