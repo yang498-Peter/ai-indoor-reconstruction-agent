@@ -220,6 +220,8 @@ def evaluate_authority_scene(
     support_ratio_min: float = 0.70,
     support_tolerance_m: float = 0.06,
     bin_size_m: float = 0.10,
+    point_to_model_grid_size_m: float = 0.12,
+    max_unexplained_run_m: float = 1.0,
 ) -> dict[str, Any]:
     raw_scene = scene_path.read_bytes()
     scene = json.loads(raw_scene.decode("utf-8"))
@@ -231,6 +233,8 @@ def evaluate_authority_scene(
         support_ratio_min=support_ratio_min,
         support_tolerance_m=support_tolerance_m,
         bin_size_m=bin_size_m,
+        point_to_model_grid_size_m=point_to_model_grid_size_m,
+        max_unexplained_run_m=max_unexplained_run_m,
         scene_sha256=hashlib.sha256(raw_scene).hexdigest(),
     )
     report["scene"] = str(scene_path.resolve())
@@ -264,6 +268,8 @@ def main() -> int:
     evaluate.add_argument("--support-ratio-min", type=float, default=0.70)
     evaluate.add_argument("--support-tolerance", type=float, default=0.06)
     evaluate.add_argument("--bin-size", type=float, default=0.10)
+    evaluate.add_argument("--point-to-model-grid-size", type=float, default=0.12)
+    evaluate.add_argument("--max-unexplained-run", type=float, default=1.0)
     args = parser.parse_args()
 
     if args.command == "prepare":
@@ -291,6 +297,8 @@ def main() -> int:
         support_ratio_min=args.support_ratio_min,
         support_tolerance_m=args.support_tolerance,
         bin_size_m=args.bin_size,
+        point_to_model_grid_size_m=args.point_to_model_grid_size,
+        max_unexplained_run_m=args.max_unexplained_run,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] == "PASS" else 1

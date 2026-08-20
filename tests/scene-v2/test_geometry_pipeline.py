@@ -221,15 +221,17 @@ class GeometryProposalAndMetricTest(unittest.TestCase):
     def _scene_with_south_wall(self, shift_y: float = 0.0) -> dict:
         scene = scene_api.new_scene("synthetic-room", 2.8, 0.0, "author-a")
         level = scene_api.default_level_id(scene)
-        scene_api.op_create_wall(scene, {
-            "id": "wall_south",
-            "start": [self.origin_x, self.origin_y + shift_y],
-            "end": [self.origin_x + 6.0, self.origin_y + shift_y],
-            "height": 2.8,
-            "thickness": 0.2,
-            "level": level,
-        }, "author-a")
-        scene["evidence"]["wall_south"]["status"] = "accepted-measured"
+        walls = {
+            "wall_south": ([self.origin_x, self.origin_y + shift_y], [self.origin_x + 6.0, self.origin_y + shift_y]),
+            "wall_north": ([self.origin_x, self.origin_y + 4.0], [self.origin_x + 6.0, self.origin_y + 4.0]),
+            "wall_west": ([self.origin_x, self.origin_y], [self.origin_x, self.origin_y + 4.0]),
+            "wall_east": ([self.origin_x + 6.0, self.origin_y], [self.origin_x + 6.0, self.origin_y + 4.0]),
+        }
+        for wall_id, (start, end) in walls.items():
+            scene_api.op_create_wall(scene, {
+                "id": wall_id, "start": start, "end": end, "height": 2.8, "thickness": 0.2, "level": level,
+            }, "author-a")
+            scene["evidence"][wall_id]["status"] = "accepted-measured"
         return scene
 
     def test_pointcloud_metric_is_a_hard_gate_and_binds_scene_and_index(self):
@@ -240,8 +242,14 @@ class GeometryProposalAndMetricTest(unittest.TestCase):
             support_ratio_min=0.80,
         )
         self.assertEqual(good["status"], "PASS")
-        self.assertEqual(good["wallMetrics"][0]["status"], "PASS")
+        self.assertTrue(all(item["status"] == "PASS" for item in good["wallMetrics"]))
+        self.assertEqual(good["pointToModelAudit"]["status"], "PASS")
         self.assertEqual(good["indexFingerprint"], self.index.manifest["indexFingerprint"])
+        self.assertEqual(good["schemaVersion"], "2.0")
+        self.assertEqual(good["artifactType"], "pointcloud-scene-metrics-v2")
+        self.assertEqual(good["inputHashes"]["indexManifestSha256"], good["indexManifestSha256"])
+        self.assertEqual(len(good["configDigest"]), 64)
+        self.assertEqual(len(good["producer"]["codeSha256"]), 64)
 
         shifted = metrics.evaluate_scene(
             self._scene_with_south_wall(shift_y=0.35),
@@ -251,7 +259,8 @@ class GeometryProposalAndMetricTest(unittest.TestCase):
         )
         self.assertEqual(shifted["status"], "FAIL")
         self.assertTrue(shifted["hardGateFailures"])
-        self.assertGreater(shifted["wallMetrics"][0]["residualP90M"], 0.06)
+        south = next(item for item in shifted["wallMetrics"] if item["id"] == "wall_south")
+        self.assertGreater(south["residualP90M"], 0.06)
 
 
 class DriftPhantomWallTest(unittest.TestCase):

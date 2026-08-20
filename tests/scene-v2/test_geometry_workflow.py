@@ -79,19 +79,19 @@ class GeometryWorkflowTest(unittest.TestCase):
 
         scene = support.scene_api.new_scene("workflow-room", 2.8, 0.0, "reviewer-a")
         level = support.scene_api.default_level_id(scene)
-        support.scene_api.op_create_wall(
-            scene,
-            {
-                "id": "wall_south",
-                "start": [self.origin_x, self.origin_y],
-                "end": [self.origin_x + 6.0, self.origin_y],
-                "height": 2.8,
-                "thickness": 0.2,
-                "level": level,
-            },
-            "reviewer-a",
-        )
-        scene["evidence"]["wall_south"]["status"] = "accepted-measured"
+        walls = {
+            "wall_south": ([self.origin_x, self.origin_y], [self.origin_x + 6.0, self.origin_y]),
+            "wall_north": ([self.origin_x, self.origin_y + 4.0], [self.origin_x + 6.0, self.origin_y + 4.0]),
+            "wall_west": ([self.origin_x, self.origin_y], [self.origin_x, self.origin_y + 4.0]),
+            "wall_east": ([self.origin_x + 6.0, self.origin_y], [self.origin_x + 6.0, self.origin_y + 4.0]),
+        }
+        for wall_id, (start, end) in walls.items():
+            support.scene_api.op_create_wall(
+                scene,
+                {"id": wall_id, "start": start, "end": end, "height": 2.8, "thickness": 0.2, "level": level},
+                "reviewer-a",
+            )
+            scene["evidence"][wall_id]["status"] = "accepted-measured"
         scene_path = self.derivative_root / "scene-authority.json"
         scene_path.write_text(json.dumps(scene, ensure_ascii=False), encoding="utf-8")
         report_path = self.derivative_root / "pointcloud-scene-metrics.json"
@@ -100,6 +100,8 @@ class GeometryWorkflowTest(unittest.TestCase):
         self.assertEqual(report["indexFingerprint"], prepared["indexFingerprint"])
         self.assertEqual(report["sceneSha256"], sha256(scene_path))
         self.assertTrue(report_path.is_file())
+        self.assertEqual(report["schemaVersion"], "2.0")
+        self.assertFalse(any(report_path.parent.glob(f".{report_path.name}.tmp-*")))
 
     def test_evaluate_does_not_upgrade_a_scene_without_measured_walls(self):
         workflow.prepare_workspace(

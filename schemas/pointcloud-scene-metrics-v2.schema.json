@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/pointcloud-scene-metrics-v2.schema.json",
+  "title": "Point-cloud scene metrics V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "artifactType",
+    "kind",
+    "status",
+    "sceneSha256",
+    "indexFingerprint",
+    "indexManifestSha256",
+    "inputHashes",
+    "configDigest",
+    "producer",
+    "lineage",
+    "thresholds",
+    "wallMetrics",
+    "pointToModelAudit",
+    "hardGateFailures"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "artifactType": {"const": "pointcloud-scene-metrics-v2"},
+    "kind": {"const": "pointcloud-scene-metrics"},
+    "status": {"enum": ["PASS", "FAIL", "NOT_RUN"]},
+    "sceneSha256": {"$ref": "#/$defs/sha256"},
+    "sceneRevision": {"type": ["object", "integer", "null"]},
+    "scene": {"type": "string"},
+    "workflow": {"type": "string"},
+    "index": {"type": "string"},
+    "indexFingerprint": {"$ref": "#/$defs/sha256"},
+    "indexManifestSha256": {"$ref": "#/$defs/sha256"},
+    "inputHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sceneSha256", "indexManifestSha256"],
+      "properties": {
+        "sceneSha256": {"$ref": "#/$defs/sha256"},
+        "indexManifestSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "configDigest": {"$ref": "#/$defs/sha256"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "codeSha256", "gitSha"],
+      "properties": {
+        "name": {"const": "pointcloud_scene_metrics.py"},
+        "version": {"const": "2.0"},
+        "codeSha256": {"$ref": "#/$defs/sha256"},
+        "gitSha": {"anyOf": [{"$ref": "#/$defs/gitCommit"}, {"const": "WORKTREE"}]}
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceContentSha256", "sourceSetDigest", "captureFingerprint", "indexFingerprint"],
+      "properties": {
+        "sourceContentSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "sourceSetDigest": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "captureFingerprint": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "indexFingerprint": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "thresholds": {"type": "object"},
+    "acceptedMeasuredWallCount": {"type": "integer", "minimum": 0},
+    "evaluatedWallCount": {"type": "integer", "minimum": 0},
+    "wallMetrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "hardGateFailures"],
+        "properties": {
+          "id": {"type": "string"},
+          "status": {"enum": ["PASS", "REVIEW", "FAIL", "NOT_RUN"]},
+          "hardGateFailures": {"type": "array", "items": {"type": "string"}}
+        },
+        "anyOf": [
+          {
+            "required": [
+              "supportProfile", "surfaceResidualP50M", "surfaceResidualP90M", "surfaceResidualP99M",
+              "coverageAreaRatio", "verticalCoverageRatio", "endpointSupport", "maxUnsupportedRunM",
+              "unsupportedIntervals", "twoFaceSupportRatio", "outlierRatio"
+            ]
+          },
+          {"properties": {"hardGateFailures": {"minItems": 1}}}
+        ]
+      }
+    },
+    "pointToModelAudit": {"type": "object", "required": ["status", "hardGateFailures"]},
+    "hardGateFailures": {"type": "array", "items": {"type": "string"}},
+    "scope": {"type": "string"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitCommit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"}
+  }
+}
