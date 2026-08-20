@@ -187,6 +187,16 @@ def _candidate_records(proposals: dict[str, Any], bounds: dict[str, float]) -> l
     return records
 
 
+# Half a typical partition thickness: two parallel walls one partition apart
+# must stay two walls instead of being welded into a point-count-weighted blend.
+_OFFSET_MERGE_TOLERANCE_M = 0.08
+_OFFSET_SPREAD_REVIEW_M = 0.05
+# Along-axis gaps below this are scan breakage and bridge silently; anything
+# wider that still gets bridged may be a doorway, so it must be recorded.
+_SILENT_BRIDGE_GAP_M = 0.25
+_MAX_BRIDGE_GAP_M = 1.5
+
+
 def _consolidate_walls(proposals: dict[str, Any], bounds: dict[str, float]) -> list[dict[str, Any]]:
     records = _candidate_records(proposals, bounds)
     offset_groups: list[list[dict[str, Any]]] = []
@@ -195,7 +205,7 @@ def _consolidate_walls(proposals: dict[str, Any], bounds: dict[str, float]) -> l
         for group in reversed(offset_groups):
             if group[0]["family"] != record["family"]:
                 continue
-            if abs(float(np.median([item["offset"] for item in group])) - record["offset"]) <= 0.16:
+            if abs(float(np.median([item["offset"] for item in group])) - record["offset"]) <= _OFFSET_MERGE_TOLERANCE_M:
                 target = group
                 break
         (target if target is not None else offset_groups.append([]) or offset_groups[-1]).append(record)
@@ -205,7 +215,7 @@ def _consolidate_walls(proposals: dict[str, Any], bounds: dict[str, float]) -> l
         group.sort(key=lambda item: item["startAlong"])
         batches: list[list[dict[str, Any]]] = []
         for record in group:
-            if not batches or record["startAlong"] - max(item["endAlong"] for item in batches[-1]) > 0.42:
+            if not batches or record["startAlong"] - max(item["endAlong"] for item in batches[-1]) > _MAX_BRIDGE_GAP_M:
                 batches.append([record])
             else:
                 batches[-1].append(record)
@@ -214,6 +224,19 @@ def _consolidate_walls(proposals: dict[str, Any], bounds: dict[str, float]) -> l
             end_along = max(item["endAlong"] for item in batch)
             if end_along - start_along < 0.8:
                 continue
+            # Opening-aware bridging: bridged gaps wide enough to be a doorway
+            # are kept on the wall record so downstream review or
+            # opening_candidates can turn them into opening candidates.
+            bridged_gaps: list[dict[str, float]] = []
+            covered_end = None
+            for item in batch:
+                if covered_end is not None and item["startAlong"] - covered_end >= _SILENT_BRIDGE_GAP_M:
+                    bridged_gaps.append({
+                        "alongStartM": round(covered_end - start_along, 4),
+                        "alongEndM": round(item["startAlong"] - start_along, 4),
+                        "widthM": round(item["startAlong"] - covered_end, 4),
+                    })
+                covered_end = item["endAlong"] if covered_end is None else max(covered_end, item["endAlong"])
             weights = np.asarray([max(1.0, float(item["proposal"].get("supportPointCount", 1))) for item in batch])
             offsets = np.asarray([item["offset"] for item in batch])
             offset = float(np.average(offsets, weights=weights))
@@ -223,7 +246,7 @@ def _consolidate_walls(proposals: dict[str, Any], bounds: dict[str, float]) -> l
             source_ids = sorted({str(item["proposal"]["id"]) for item in batch})
             paired = [item for item in batch if item["proposal"].get("wallMode") == "paired-faces"]
             thicknesses = [float(item["proposal"].get("thicknessM", 0.12)) for item in batch]
-            walls.append({
+            wall = {
                 "start": start,
                 "end": end,
                 "thickness": float(np.clip(np.median(thicknesses), 0.08, 0.35)),
@@ -232,7 +255,12 @@ def _consolidate_walls(proposals: dict[str, Any], bounds: dict[str, float]) -> l
                 "supportPointCount": sum(int(item["proposal"].get("supportPointCount", 0)) for item in batch),
                 "sourceProposalIds": source_ids,
                 "pairedFaceSupport": bool(paired),
-            })
+                "bridgedGaps": bridged_gaps,
+            }
+            offset_spread = float(max(offsets) - min(offsets))
+            if offset_spread > _OFFSET_SPREAD_REVIEW_M:
+                wall["mergeSpreadM"] = round(offset_spread, 4)
+            walls.append(wall)
     walls.sort(key=lambda wall: (-float(np.linalg.norm(wall["end"] - wall["start"])), wall["start"][0], wall["start"][1]))
     return walls
 
@@ -363,6 +391,12 @@ def _scene_layers(
                 "sourceProposalIds": wall["sourceProposalIds"],
             },
         }
+        # Bridged gaps are candidate door openings; surface them for review
+        # instead of leaving the wall silently welded shut.
+        if wall.get("bridgedGaps"):
+            common["meta"]["bridgedGaps"] = wall["bridgedGaps"]
+        if wall.get("mergeSpreadM") is not None:
+            common["meta"]["mergeSpreadM"] = wall["mergeSpreadM"]
         roots = [root_sha256] if root_sha256 else None
         sources = [
             _evidence_source(

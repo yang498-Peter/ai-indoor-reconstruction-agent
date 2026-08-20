@@ -151,6 +151,64 @@ class FurnitureEvidenceTest(unittest.TestCase):
         self.assertNotEqual(sources[0]["lineageId"], photo["lineageId"])
 
 
+def _line_candidate(cid, start, end, thickness=0.12, support=40):
+    return {
+        "id": cid, "suggestedCenterline": {"start": list(start), "end": list(end)},
+        "lengthM": float(np.hypot(end[0] - start[0], end[1] - start[1])),
+        "confidence": 0.7, "fitResidualP90M": 0.05,
+        "supportPointCount": support, "thicknessM": thickness,
+    }
+
+
+class WallConsolidationTest(unittest.TestCase):
+    BOUNDS = {"minX": -10.0, "maxX": 10.0, "minY": -10.0, "maxY": 10.0}
+
+    def _consolidate(self, candidates):
+        return base._consolidate_walls(
+            {"axisFamilies": [{"angleDeg": 0.0}], "wallCandidates": candidates},
+            self.BOUNDS,
+        )
+
+    def test_parallel_walls_one_partition_apart_stay_separate(self):
+        walls = self._consolidate([
+            _line_candidate("near", (0.0, 0.0), (4.0, 0.0), support=500),
+            _line_candidate("far", (0.0, 0.12), (4.0, 0.12), support=20),
+        ])
+        self.assertEqual(len(walls), 2)
+        offsets = sorted(round(float(wall["start"][1]), 4) for wall in walls)
+        # A weld would have dragged the shared offset toward the heavy wall.
+        self.assertEqual(offsets, [0.0, 0.12])
+
+    def test_doorway_sized_gap_is_bridged_but_recorded(self):
+        walls = self._consolidate([
+            _line_candidate("left", (0.0, 0.0), (2.0, 0.0)),
+            _line_candidate("right", (2.9, 0.0), (5.0, 0.0)),
+        ])
+        self.assertEqual(len(walls), 1)
+        self.assertAlmostEqual(float(walls[0]["start"][0]), 0.0, places=6)
+        self.assertAlmostEqual(float(walls[0]["end"][0]), 5.0, places=6)
+        self.assertEqual(walls[0]["bridgedGaps"], [
+            {"alongStartM": 2.0, "alongEndM": 2.9, "widthM": 0.9},
+        ])
+
+    def test_scan_breakage_gap_bridges_silently(self):
+        walls = self._consolidate([
+            _line_candidate("left", (0.0, 0.0), (2.0, 0.0)),
+            _line_candidate("right", (2.15, 0.0), (4.0, 0.0)),
+        ])
+        self.assertEqual(len(walls), 1)
+        self.assertEqual(walls[0]["bridgedGaps"], [])
+        self.assertNotIn("mergeSpreadM", walls[0])
+
+    def test_offset_spread_above_review_threshold_is_recorded(self):
+        walls = self._consolidate([
+            _line_candidate("a", (0.0, 0.0), (4.0, 0.0)),
+            _line_candidate("b", (0.0, 0.07), (4.0, 0.07)),
+        ])
+        self.assertEqual(len(walls), 1)
+        self.assertAlmostEqual(walls[0]["mergeSpreadM"], 0.07, places=4)
+
+
 class EvidenceProvenanceTest(unittest.TestCase):
     def test_relative_scene_path_survives_bundle_moves(self):
         with tempfile.TemporaryDirectory() as temp:
