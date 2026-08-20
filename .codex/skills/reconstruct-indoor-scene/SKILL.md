@@ -47,7 +47,7 @@ After the macro pass, correct the hypothesis region by region: point clouds refi
 3. Run `scripts/discover_capture.py --data <capture> --output <work>/capture-manifest.json --length-unit metre --up-axis Z --coordinate-reference <local-frame-or-CRS>`. Use the actual declared source unit; `metre` is only an example. The V3 manifest hashes reconstruction inputs by content and records the checked-in adapter registry. If it returns `BLOCKED_MULTI_CAPTURE_ROOT`, select exactly one reported `relativeRoot` and rediscover there. If one unit still returns `BLOCKED_AMBIGUOUS_CLOUD`, rerun with `--point-cloud <exact-relative-path>` after inspecting the alternatives. `BLOCKED_UNSUPPORTED_POINT_CLOUD` means the file was discovered but no validated parser exists; never relabel it READY. `BLOCKED_COORDINATE_FRAME_REQUIRED` requires an explicit unit, Z-up declaration, and local-frame or CRS identity. If it returns `BLOCKED_NO_POINT_CLOUD`, stop. Never pair a cloud from one capture unit with photos or poses from another.
 4. Inspect an unannotated overview and decide the scene domain. For a new indoor dataset, run `scripts/init_reconstruction_job.py --data <capture-unit> --work <fresh-work> --scene-domain indoor --scaffold <repo>/prototypes/litereality-three-demo --length-unit <unit> --up-axis Z --coordinate-reference <local-frame-or-CRS>`. `outdoor`, `mixed`, and `unknown` fail closed here - route those captures to the `reconstruct-site-scene` skill instead. The work directory must be outside the capture and bound to its content fingerprint. This also creates a V2 `pipeline-state.json` bound to `schemas/pipeline-contract-v2.json`, with nine resumable stages, capability truth, issue history, and checkpoints. An older state must enter through `reconstruction_loop.py migrate-state`; never edit its version by hand.
 5. Treat `READY_GEOMETRY_ONLY` as permission for geometry work only. Missing photos blocks material acceptance; missing pose/transform evidence blocks posed-photo association; either condition blocks whole-scene acceptance.
-   A pose filename or frame count never enables association. `transforms.json` must pass rigid camera-to-world format, exact image binding, and point-cloud alignment through `scene-core/capture_readiness.py validate-pose`. Keep the manifest gate blocked until the hash-bound pose-validation artifact passes. Rebuild legacy `capture-index-v1` derivatives as V2; do not hand-edit their format string or tile hashes.
+   A pose filename or frame count never enables association. `transforms.json` must pass rigid camera-to-world format, exact image binding, and point-cloud alignment through `scene-core/capture_readiness.py validate-pose`; prefer the per-frame `validate-pose-reprojection` gate (projected-LAS versus photo correlation) so a few bad frames are rejected individually instead of failing the whole batch. A PASS artifact unlocks the manifest gate through `reconstruction_loop.py revalidate-intake`; keep the gate blocked until then. Rebuild legacy `capture-index-v1` derivatives as V2; do not hand-edit their format string or tile hashes.
 6. Reuse an existing local viewer/generator when present. The current `prototypes/litereality-three-demo` generator and ledgers are example-bound: for a new dataset, parameterize source path, output root, capture fingerprint, and a blank ledger before running it. Never let a new capture reuse the example scene, evidence, screenshots, or decisions.
 7. Otherwise adapt the semantic-scene and Three.js scaffold without hardcoding a capture path, filename convention, or room layout.
 8. Record the source coordinate system and one explicit source-to-display mapping. Indoor source data is commonly Z-up; Three.js scenes commonly use Y-up.
@@ -92,6 +92,40 @@ Before accepting any exterior wall or glazing face, run `scripts/audit_facade_fa
 Before publishing any floor or visual underlay, estimate the local floor peak independently and report floor-band point count, occupied grid cells, connected support and distance to existing slabs. Furniture existence never proves a floor boundary. An isolated patch with sparse support (default warning below 20% occupied cells unless the capture has a calibrated alternative) stays `WITHHOLD`; do not downgrade it to inferred merely to make the render look complete. A visual underlay is non-topological and earns no room-closure credit.
 
 When the outer face is beyond a transparent or unscanned gap, keep the measured opaque cross-wall endpoint and the inferred facade-junction endpoint as separate fields/elements. Do not stretch the entire opaque wall through the gap. The room footprint may use the inferred junction, while the solid renderer stops at measured evidence.
+
+## Author geometry through the measurement services
+
+The Agent is the author; deterministic tools are measurement services. Use
+them in this order rather than trusting any single automatic proposal:
+
+- `scene-core/level_survey.py` fits robust RANSAC floor/ceiling planes
+  (tilt-safe, multi-level aware). Prefer its plane over the scalar
+  histogram floorZ whenever they disagree.
+- `scene-core/structural_proposals.py` proposes wall faces; drift pairs are
+  auto-merged via cavity emptiness plus face-color agreement
+  (`driftMergedFrom`). Review `cavityPointRatio` before trusting any
+  paired-face thickness.
+- When a wall is missing or a proposal looks wrong, sketch your own rough
+  line (0.3 m / 8 deg tolerance) and call `propose_wall` /
+  `refine_wall_line` (MCP) or `scene-core/fit_service.py`: it refines the
+  line with RANSAC+IRLS against the indexed cloud and returns support,
+  residuals, and opposite-face thickness candidates. You decide; writes
+  still go through the gated scene tools.
+- Run `scene-core/opening_candidates.py` along every accepted wall before
+  hand-authoring doors or windows; check `bridgedGaps` recorded on
+  consolidated walls for swallowed doorways.
+- After the wall set stabilizes, run `scene-core/wall_graph_adjust.py` and
+  review its before/after displacement table; accept the joint adjustment
+  only as an explicit transaction.
+- For every accepted wall generate a dossier
+  (`scene-core/wall_dossier.py`): ortho crop + section + wireframe
+  projected into the nearest posed photos. Look at it before and after
+  authoring - projected wireframes landing off the photographed wall is
+  the fastest defect detector available.
+- Photo/VLM observations (pixel boxes) enter only through
+  `scene-core/semantic_candidates.py` / `submit_semantic_observations`:
+  they yield ray-cast candidate geometry that always requires geometric
+  confirmation before acceptance.
 
 ## Resolve the hypothesis in construction order
 
@@ -158,7 +192,7 @@ Pass only when all are true:
 - no P0 or P1 visual findings;
 - every declared room closes and publishes all boundary elements;
 - repeated partitions differ by at most 2 degrees unless evidence records an exception;
-- measured plan offsets are at most 0.08 m; larger or unmeasured completions must be `accepted-inferred`, retain an explicit reason, and link at least two verified evidence files with distinct content hashes and disjoint root lineages;
+- measured plan offsets are at most 0.08 m; larger or unmeasured completions must be `accepted-inferred`, retain an explicit reason, and link at least two verified evidence files with distinct content hashes and distinct derivation-pipeline lineages (different generators or generator parameters; sharing the same LAS root is allowed and reported as `sharedRootCount`);
 - every reviewed region scores at least 85 and total score is at least 90;
 - the review receipt hash matches the current scene;
 - the V2 evidence ledger has no unresolved non-level nodes, declared topology contains at least one space, and every current P0/P1 issue is resolved;

@@ -26,6 +26,20 @@
 4. 先求解全局主轴、墙族、空间连通、房间包络、通道和重复模数，再把测量墙段挂到空间上。
 5. 每次修改 authority geometry 后同步更新 hypothesis 和 presentation，禁止把权威零件列表直接当成成品模型。
 
+## 2b. 测量服务与参考视觉（Agent 是作者，算法是测量员）
+
+几何决策由 Agent 做，确定性工具负责测量与复核：
+
+- `level_survey.py`：RANSAC 地板/天花平面（抗倾斜、多层感知），优先于标量直方图 floorZ；
+- `structural_proposals.py`：墙面提案；漂移双线经墙腔验空+颜色一致性自动合并（`driftMergedFrom`），配对墙必须复核 `cavityPointRatio`；
+- `fit_service.py` / MCP `propose_wall`：Agent 画粗线（容忍 0.3 m/8°），服务用 RANSAC+IRLS 精化并回报 support/残差/对面厚度候选——只测量不写场景；
+- `opening_candidates.py`：沿墙占用剖面自动提门窗候选；合并墙上的 `bridgedGaps` 是疑似被焊死的门洞；
+- `wall_graph_adjust.py`：轴族/共线/角点闭合/墙厚族联合平差，输出前后位移表供 Agent 显式采纳；
+- `wall_dossier.py` / `render_photo_overlay.py`：每墙一页参考档案（正射 + 剖面 + 线框投影到最近照片），建模前定位、建模后核对——线框没落在照片真实墙上就是最快的缺陷检测器；
+- `capture_readiness.py validate-pose-reprojection`：逐帧投影-照片相关性门，坏帧单独剔除，PASS 后经 `revalidate-intake` 解锁照片关联能力；
+- `semantic_candidates.py`：VLM/看图观察（像素框）只能经反投影产出 candidate 几何，接受前必须几何复核；
+- Viewer 照片对齐模式（视锥点击进入、线框叠加照片、透明度滑杆；2:1 图自动全景球）与审查面板（状态色点、support/残差、证据预览、聚焦过滤）供人与 Agent 用同一视角核对。
+
 ## 3. 分区复核
 
 每个区域至少核对：
