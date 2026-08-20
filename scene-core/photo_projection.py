@@ -492,12 +492,14 @@ def wall_wireframe(wall: dict, ground_z: float, children: list[dict] | None = No
     for child in children or []:
         if child.get("type") not in {"window", "door", "opening"}:
             continue
+        # hostOffsetM is the opening CENTER along the wall (scene_api
+        # opening_interval convention), not the left edge.
         offset = float(child.get("hostOffsetM", 0.0))
         width = float(child.get("width", 0.0))
         sill = float(child.get("sillHeight", 0.0)) + ground_z
         head = sill + float(child.get("height", 0.0))
-        a = start + unit * offset
-        b = start + unit * (offset + width)
+        a = start + unit * (offset - width / 2.0)
+        b = start + unit * (offset + width / 2.0)
         openings.append(
             {
                 "id": child.get("id"),
