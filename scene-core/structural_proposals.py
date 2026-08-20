@@ -357,7 +357,8 @@ def build_proposals(
         minLineLength=max(5, int(round(min_length_m / raster_cell_m))),
         maxLineGap=max(1, int(round(max_gap_m / raster_cell_m))),
     )
-    raw_lines = [] if lines is None else [entry[0] for entry in lines]
+    # HoughLinesP returns (N,1,4) or (N,4) depending on the OpenCV build.
+    raw_lines = [] if lines is None else np.asarray(lines).reshape(-1, 4)
     observations: list[LineObservation] = []
     for index_number, (x0, y0, x1, y1) in enumerate(raw_lines):
         start = np.asarray([min_x + x0 * raster_cell_m, max_y - y0 * raster_cell_m], dtype=np.float64)
