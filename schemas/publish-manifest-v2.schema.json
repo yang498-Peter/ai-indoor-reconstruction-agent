@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/schemas/publish-manifest-v2.schema.json",
+  "title": "Self-contained content-addressed Scene V2 publish bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "artifactType",
+    "publishedAt",
+    "publisher",
+    "jobId",
+    "captureFingerprint",
+    "bundleDigest",
+    "geometryDigest",
+    "artifactSha256",
+    "evidenceSetDigest",
+    "configDigest",
+    "publishScope",
+    "scopeBlockedCapabilities",
+    "capabilityDegradations",
+    "verification",
+    "files"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "artifactType": {"const": "scene-v2-publish-bundle"},
+    "publishedAt": {"type": "string", "format": "date-time"},
+    "publisher": {"type": "object"},
+    "jobId": {"type": "string", "minLength": 1},
+    "captureFingerprint": {"$ref": "#/$defs/sha256"},
+    "bundleDigest": {"$ref": "#/$defs/sha256"},
+    "geometryDigest": {"$ref": "#/$defs/sha256"},
+    "artifactSha256": {"$ref": "#/$defs/sha256"},
+    "evidenceSetDigest": {"$ref": "#/$defs/sha256"},
+    "configDigest": {"$ref": "#/$defs/sha256"},
+    "publishScope": {"type": "string", "minLength": 1},
+    "scopeBlockedCapabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "capabilityDegradations": {"type": "array", "items": {"type": "object"}},
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "status"],
+      "properties": {
+        "algorithm": {"const": "sha256-canonical-manifest-core-v1"},
+        "status": {"const": "PASS"}
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "sha256", "size"],
+        "properties": {
+          "role": {"enum": ["authority", "review", "quality", "evidence", "render", "provenance"]},
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          },
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "size": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

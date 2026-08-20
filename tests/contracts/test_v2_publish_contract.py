@@ -3,8 +3,12 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -22,6 +26,8 @@ LOOP_MODULE = (
     / "scripts"
     / "reconstruction_loop.py"
 )
+PUBLISH_MODULE = SCENE_CORE / "publish_bundle_v2.py"
+PUBLISH_SCHEMA = ROOT / "schemas" / "publish-manifest-v2.schema.json"
 
 
 def load_module(name: str, path: Path):
@@ -67,11 +73,15 @@ class V2PublishContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.quality = load_module("quality_report_v2_contract", QUALITY_MODULE)
         self.loop = load_module("reconstruction_loop_contract", LOOP_MODULE)
+        self.publisher = load_module("publish_bundle_v2_contract", PUBLISH_MODULE)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.evidence_path = self.root / "evidence" / "wall-section.bin"
         self.evidence_path.parent.mkdir(parents=True)
         self.evidence_path.write_bytes(b"deterministic-wall-section")
+        self.render_path = self.root / "renders" / "global-review.png"
+        self.render_path.parent.mkdir(parents=True)
+        self.render_path.write_bytes(b"deterministic-render")
         self.publisher_identity_path = self.root / "publisher-identity.json"
         self.publisher_identity_path.write_text(json.dumps(PUBLISHER), encoding="utf-8")
         self.scene = self._make_publishable_scene()
@@ -145,6 +155,38 @@ class V2PublishContractTest(unittest.TestCase):
     def _evaluate(self) -> dict:
         return self.quality.evaluate_files(self.scene_path, self.review_path)
 
+    def _bundle_fixture(self, output: Path, extras: list[tuple[str, Path]] | None = None):
+        report = self._evaluate()
+        report_path = self.root / f"quality-{output.name}.json"
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        state = {
+            "jobId": "bundle-contract",
+            "captureFingerprint": "a" * 64,
+            "pipelineContractDigest": "b" * 64,
+            "currentSceneSha256": hashlib.sha256(self.scene_path.read_bytes()).hexdigest(),
+            "stageOrder": [],
+            "stages": {},
+            "capabilities": {},
+            "executions": {},
+            "issues": [],
+        }
+        return self.publisher.create_bundle(
+            output,
+            self.scene_path,
+            self.review_path,
+            report_path,
+            state,
+            PUBLISHER,
+            extras if extras is not None else [("render", self.render_path)],
+            "full",
+            [],
+            [],
+            published_at="2026-08-21T00:00:00+00:00",
+        )
+
     def _bind_stage_identities(self, state: dict) -> None:
         for execution in (AUTHOR, REVIEWER):
             state["executions"][execution["runId"]] = {
@@ -169,6 +211,12 @@ class V2PublishContractTest(unittest.TestCase):
         self.assertEqual(set(schema["required"]), set(report))
         self.assertEqual(set(schema["properties"]["checks"]["required"]), set(report["checks"]))
         self.assertEqual(report["checks"]["sharedRootCount"], 0)
+        self.assertTrue(report["blockingChecks"])
+        self.assertTrue(all(item["status"] == "PASS" for item in report["blockingChecks"]))
+        self.assertEqual(
+            len({item["id"] for item in report["blockingChecks"]}),
+            len(report["blockingChecks"]),
+        )
 
     def test_shared_root_derivations_pass_and_are_reported_as_info(self) -> None:
         # Pure geometry capture: every derived artifact descends from one LAS.
@@ -232,6 +280,9 @@ class V2PublishContractTest(unittest.TestCase):
         self.assertTrue(
             any(error.startswith("REVIEW_SCORE_BELOW_GATE") for error in report["errors"])
         )
+        score_check = next(item for item in report["blockingChecks"] if item["id"] == "review-score")
+        self.assertEqual(score_check["status"], "FAIL")
+        self.assertEqual(score_check["failureCode"], "REVIEW_SCORE_MISSING_OR_BELOW_GATE")
 
     def test_review_total_score_below_90_fails_score_gate(self) -> None:
         self._write_review(
@@ -281,6 +332,25 @@ class V2PublishContractTest(unittest.TestCase):
         self.assertEqual(report["status"], "FAIL")
         self.assertFalse(report["checks"]["claimsCurrent"])
         self.assertIn("ACCEPTED_CLAIMS_STALE", report["errors"])
+
+    def test_quality_rejects_evidence_path_escape(self) -> None:
+        scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
+        scene["evidence"]["wall_a"]["sources"][0]["path"] = "../outside.bin"
+        self.scene_path.write_text(
+            json.dumps(scene, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.review_path.write_text(
+            json.dumps(self._review_receipt(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("EVIDENCE_PATH_ESCAPE:wall_a:0", report["errors"])
+        evidence_check = next(
+            item for item in report["blockingChecks"] if item["id"] == "evidence-files"
+        )
+        self.assertEqual(evidence_check["status"], "FAIL")
 
     def test_presentation_layer_cannot_pass_authority_quality_gate(self) -> None:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
@@ -431,12 +501,16 @@ class V2PublishContractTest(unittest.TestCase):
                 "quality_report": report_path,
                 "score": None,
                 "output": self.root / "published",
+                "bundle_file": [f"render={self.render_path}"],
                 "note": "V2 contract publish",
             },
         )()
         self.loop.command_publish(args)
 
-        publish_root = self.root / "published" / report["geometryDigest"][:16]
+        published = list((self.root / "published").iterdir())
+        self.assertEqual(len(published), 1)
+        publish_root = published[0]
+        self.assertEqual(len(publish_root.name), 64)
         self.assertTrue((publish_root / "scene-authority.json").is_file())
         self.assertTrue((publish_root / "quality-report.json").is_file())
         self.assertFalse((publish_root / "scene-score.json").exists())
@@ -445,6 +519,96 @@ class V2PublishContractTest(unittest.TestCase):
         )
         self.assertEqual(manifest["schemaVersion"], "2.0")
         self.assertEqual(manifest["geometryDigest"], report["geometryDigest"])
+        self.assertEqual(manifest["bundleDigest"], publish_root.name)
+        self.assertEqual(
+            {item["role"] for item in manifest["files"]},
+            {"authority", "review", "quality", "evidence", "render", "provenance"},
+        )
+        self.assertTrue(all(not Path(item["path"]).is_absolute() for item in manifest["files"]))
+        self.assertTrue(all((publish_root / item["path"]).is_file() for item in manifest["files"]))
+        for json_path in publish_root.rglob("*.json"):
+            self.assertNotIn(str(self.root.resolve()), json_path.read_text(encoding="utf-8"))
+
+        schema = json.loads(PUBLISH_SCHEMA.read_text(encoding="utf-8"))
+        self.assertEqual(set(schema["required"]), set(manifest))
+        self.assertEqual(self.publisher.verify_bundle(publish_root)["bundleDigest"], publish_root.name)
+        published_state = json.loads(state_path.read_text(encoding="utf-8"))
+        publish_evaluation = published_state["stages"]["publish"]["evaluation"]
+        self.assertEqual(publish_evaluation["bundleDigest"], publish_root.name)
+        self.assertEqual(publish_evaluation["postPublishRevalidation"], "PASS")
+
+    def test_bundle_survives_relocation_and_detects_render_tampering(self) -> None:
+        publish_root, _ = self._bundle_fixture(self.root / "publish-relocation")
+        relocated = self.root / "relocated" / publish_root.name
+        shutil.copytree(publish_root, relocated)
+        self.assertEqual(self.publisher.verify_bundle(relocated)["bundleDigest"], relocated.name)
+        completed = subprocess.run(
+            [sys.executable, str(PUBLISH_MODULE), "--bundle", str(relocated)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        self.assertTrue(json.loads(completed.stdout)["ok"])
+
+        manifest = json.loads((relocated / "publish-manifest.json").read_text(encoding="utf-8"))
+        render = next(item for item in manifest["files"] if item["role"] == "render")
+        render_path = relocated / render["path"]
+        os.chmod(render_path, 0o666)
+        render_path.write_bytes(b"tampered-render")
+        with self.assertRaisesRegex(
+            self.publisher.PublishBundleError,
+            "PUBLISH_BUNDLE_REVALIDATION_FAILED",
+        ):
+            self.publisher.verify_bundle(relocated)
+
+    def test_manifest_path_escape_is_rejected(self) -> None:
+        publish_root, _ = self._bundle_fixture(self.root / "publish-path-escape")
+        manifest_path = publish_root / "publish-manifest.json"
+        os.chmod(manifest_path, 0o666)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"][0]["path"] = "../outside.bin"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(
+            self.publisher.PublishBundleError,
+            "PUBLISH_MANIFEST_PATH_ESCAPE",
+        ):
+            self.publisher.verify_bundle(publish_root)
+
+    def test_manifest_scope_tampering_breaks_content_address(self) -> None:
+        publish_root, _ = self._bundle_fixture(self.root / "publish-scope-tamper")
+        manifest_path = publish_root / "publish-manifest.json"
+        os.chmod(manifest_path, 0o666)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["publishScope"] = "geometry-only"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(
+            self.publisher.PublishBundleError,
+            "PUBLISH_BUNDLE_DIGEST_MISMATCH",
+        ):
+            self.publisher.verify_bundle(publish_root)
+
+    def test_missing_render_fails_before_creating_publish_directory(self) -> None:
+        output = self.root / "publish-missing-render"
+        with self.assertRaisesRegex(
+            self.publisher.PublishBundleError,
+            "PUBLISH_RENDER_REQUIRED",
+        ):
+            self._bundle_fixture(output, extras=[])
+        self.assertFalse(output.exists())
+
+    def test_render_bytes_participate_in_content_address_and_existing_bundle_is_immutable(self) -> None:
+        first, _ = self._bundle_fixture(self.root / "publish-address-a")
+        with self.assertRaisesRegex(
+            self.publisher.PublishBundleError,
+            "PUBLISH_IMMUTABLE_DESTINATION_EXISTS",
+        ):
+            self._bundle_fixture(self.root / "publish-address-a")
+
+        self.render_path.write_bytes(b"different-deterministic-render")
+        second, _ = self._bundle_fixture(self.root / "publish-address-b")
+        self.assertNotEqual(first.name, second.name)
 
 
 if __name__ == "__main__":

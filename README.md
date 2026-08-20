@@ -75,7 +75,8 @@ V2 报告按墙输出 `(s,h)` 面积覆盖、真实最长连续无支撑段、�
 ## 仓库结构
 
 - `scene-core/`：Semantic Scene V2 内核——节点图 Schema、Agent 变更 API（`scene_api.py`）、
-  渲染编译层（miter/T 交接与门窗真开洞）、V1 迁移与合成样例。见 [docs/SCENE-V2.zh-CN.md](docs/SCENE-V2.zh-CN.md)。
+  渲染编译层（miter/T 交接与门窗真开洞）、统一质量报告、自包含内容寻址发布、V1 迁移与合成样例。
+  见 [docs/SCENE-V2.zh-CN.md](docs/SCENE-V2.zh-CN.md)。
 - `.codex/skills/reconstruct-indoor-scene/`：可复用 Agent 工作流、编排、证据审计和发布评分。
 - `prototypes/litereality-three-redraw-20260812/`：通用 Three.js 产品界面与验收入口（自动识别 V1/V2 场景）。
 - `tests/codex-scan/`、`tests/scene-v2/`：编排器门禁测试与 Scene V2 API/几何数值测试。
