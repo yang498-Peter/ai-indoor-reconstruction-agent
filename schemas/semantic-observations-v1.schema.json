@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-indoor-reconstruction-agent/semantic-observations-v1.schema.json",
+  "title": "Semantic Observations V1",
+  "description": "Pixel-space semantic observations from a VLM/SAM/agent looking at posed capture photos. An observation is ONLY 'a labelled pixel box in one frame' - it never carries world coordinates. Grounding into geometry is done by scene-core/semantic_candidates.py via ray casting, and coordinate truth always comes from geometry (point cloud / fit services), never from this payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "captureFingerprint", "observations"],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "captureFingerprint": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identity of the capture the frames belong to (e.g. capture-index indexFingerprint or raw content sha256)."
+    },
+    "observations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["frameId", "bbox", "label", "labelConfidence", "observer"],
+        "properties": {
+          "frameId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Frame identity as loaded by photo_projection.load_frames: '<transforms-name>#<index>', the frame file_path, or the bare frame index as a string."
+          },
+          "bbox": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"type": "number", "minimum": 0},
+            "description": "Pixel box [x0, y0, x1, y1] in the frame's image, x0 < x1 and y0 < y1, y grows downward."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Free-form semantic label, e.g. door / window / opening / chair / table / material / poster."
+          },
+          "labelConfidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Observer's confidence in the LABEL only. Never a statement about coordinates."
+          },
+          "observer": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Who looked at the image: agent actor id or model name (e.g. 'claude-fable-5', 'sam-2.1')."
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional free-text context, e.g. 'partially occluded by curtain'."
+          }
+        }
+      }
+    }
+  }
+}

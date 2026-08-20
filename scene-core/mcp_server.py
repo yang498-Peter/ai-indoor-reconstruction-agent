@@ -79,6 +79,31 @@ def load_fit_service():
     return module
 
 
+def load_semantic_candidates():
+    """Import semantic_candidates.py by path (same rationale as load_scene_api).
+
+    Loaded lazily on first semantic-tool call: it pulls in numpy via
+    photo_projection, and the scene-authoring tool surface must keep working
+    on a host without the numeric stack installed.
+    """
+    existing = sys.modules.get("semantic_candidates")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        "semantic_candidates", CORE_DIR / "semantic_candidates.py"
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"CANNOT_LOAD_SEMANTIC_CANDIDATES:{CORE_DIR / 'semantic_candidates.py'}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["semantic_candidates"] = module
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as error:
+        del sys.modules["semantic_candidates"]
+        raise SceneError(f"SEMANTIC_CANDIDATES_UNAVAILABLE:{error}")
+    return module
+
+
 # ---------------------------------------------------------------------------
 # Shared JSON Schema fragments
 # ---------------------------------------------------------------------------
@@ -185,6 +210,10 @@ never pre-apply it here.
    wall the same way. Both tools never write -- authoring stays with you.
 3. `add_door` / `add_window` / `add_opening` hosted on a wall, where
    `offset` is the distance from the wall start to the opening CENTER.
+   When you (or a VLM/SAM pass) spot something in a photo, submit the pixel
+   box via `submit_semantic_observations` to land it on geometry first: the
+   result is always a candidate estimate to confirm, never a coordinate truth,
+   and the tool never writes.
 4. `add_slab` / `add_ceiling` / `add_zone` / `add_column` / `add_item` for the
    rest of the level.
 5. `attach_evidence` to bind each claim to a file next to the scene; the
@@ -412,6 +441,36 @@ def h_refine_wall_line(scene: dict, scene_path: Path, actor: str, args: dict) ->
             node["start"], node["end"], paired["start"], paired["end"],
         )
     return result
+
+
+def h_submit_semantic_observations(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
+    # Measurement only: pixel boxes are landed on existing scene geometry by
+    # ray casting and returned as candidates. Writing stays with the normal
+    # add tools so authorship and gates keep a single path, and coordinate
+    # truth stays with geometry, never with the semantic observer.
+    semantic = load_semantic_candidates()
+    transforms_path = Path(args["transforms"])
+    if not transforms_path.is_file():
+        raise SceneError(f"TRANSFORMS_MISSING:{transforms_path}")
+    frames = semantic.pp.load_frames(transforms_path)
+    reports: dict[str, dict] = {}
+    for wall_id, report_path in (args.get("geometry_reports") or {}).items():
+        path = Path(report_path)
+        if not path.is_file():
+            raise SceneError(f"GEOMETRY_REPORT_MISSING:{wall_id}:{path}")
+        reports[wall_id] = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        report = semantic.ground_observations(
+            scene, frames, args["observations"],
+            ground_z=float(args["ground_z"]),
+            geometry_reports=reports,
+            merge_tolerance_m=float(
+                args.get("merge_tolerance", semantic.DEFAULT_MERGE_TOLERANCE_M)
+            ),
+        )
+    except semantic.ObservationError as error:
+        raise SceneError(str(error))
+    return {"written": False, "report": report}
 
 
 # ---------------------------------------------------------------------------
@@ -742,6 +801,48 @@ TOOL_SPECS: list[dict] = [
             **FIT_PROPERTIES,
         },
         ["id", "index"],
+    ),
+    tool(
+        "submit_semantic_observations", "query", h_submit_semantic_observations,
+        "Ground VLM/SAM pixel-box observations (semantic-observations-v1 payload) into candidates "
+        "by ray casting against the scene's existing walls and floor. Door/window/opening labels "
+        "must land on a wall and come back with hostOffsetM/widthM/sillM/headM estimates; free "
+        "labels become floor-contact item or wall-surface estimates. Every result stays status "
+        "\"candidate\" with coordinateSource \"ray-cast-estimate\" and requiresGeometryConfirmation "
+        "true unless a supplied opening-candidates geometry report corroborates it "
+        "(corroboration \"geometry+semantic\", geometry dimensions win). NEVER writes the scene -- "
+        "confirm with propose_wall/opening-candidates evidence, then author via the add tools.",
+        {
+            "observations": {
+                "type": "object", "additionalProperties": True,
+                "description": (
+                    "Full semantic-observations-v1 payload: {schemaVersion: \"1.0\", "
+                    "captureFingerprint, observations: [{frameId, bbox: [x0, y0, x1, y1] pixels, "
+                    "label, labelConfidence, observer, note?}]}. Pixel boxes only -- world "
+                    "coordinates in the payload are rejected by schema."
+                ),
+            },
+            "transforms": {
+                "type": "string",
+                "description": "Path to the capture's transforms.json (posed undistorted frames).",
+            },
+            "ground_z": {
+                "type": "number",
+                "description": "LAS z of scene elevation zero (las_z = elevation + ground_z), "
+                               "e.g. -0.5 for rtk-house-2.",
+            },
+            "geometry_reports": {
+                "type": "object", "additionalProperties": {"type": "string"},
+                "description": "Optional wall node id -> path of an opening-candidates JSON report "
+                               "used to corroborate semantic openings on that wall.",
+            },
+            "merge_tolerance": {
+                "type": "number",
+                "description": "hostOffset agreement window in meters for geometry corroboration. "
+                               "Default 0.4.",
+            },
+        },
+        ["observations", "transforms", "ground_z"],
     ),
     tool(
         "undo", "raw", h_undo,

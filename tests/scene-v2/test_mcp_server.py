@@ -34,7 +34,7 @@ EXPECTED_TOOLS = {
     "add_slab", "add_ceiling", "add_zone", "add_column", "update_node", "delete_node",
     "attach_evidence", "open_issue", "apply_patch", "find_nodes",
     "measure", "get_scene_summary", "get_node", "validate_scene", "undo", "get_agent_guide",
-    "propose_wall", "refine_wall_line",
+    "propose_wall", "refine_wall_line", "submit_semantic_observations",
 }
 
 
@@ -455,6 +455,123 @@ class WallFitToolsTest(McpServerTestCase):
         self.assertTrue(is_error)
         self.assertIn("CAPTURE_INDEX_ERROR", payload["message"])
         self.assertFalse(self.scene_path.exists())
+
+
+def _look_at_c2w(position, target, up=(0.0, 0.0, 1.0)) -> np.ndarray:
+    """OpenGL camera-to-world: camera looks along -Z, +Y is up."""
+    position = np.asarray(position, dtype=np.float64)
+    forward = np.asarray(target, dtype=np.float64) - position
+    forward = forward / np.linalg.norm(forward)
+    z_axis = -forward
+    x_axis = np.cross(forward, np.asarray(up, dtype=np.float64))
+    x_axis = x_axis / np.linalg.norm(x_axis)
+    c2w = np.eye(4)
+    c2w[:3, 0] = x_axis
+    c2w[:3, 1] = np.cross(z_axis, x_axis)
+    c2w[:3, 2] = z_axis
+    c2w[:3, 3] = position
+    return c2w
+
+
+class SemanticObservationToolsTest(McpServerTestCase):
+    """submit_semantic_observations grounds pixel boxes, never writes."""
+
+    DOOR = {"center": 2.0, "width": 0.9, "head": 2.05}
+    FACE_Y = 1.95  # wall centerline y=2.0, thickness 0.1, camera on the -y side
+
+    def _write_transforms(self) -> Path:
+        path = self.root / "transforms.json"
+        path.write_text(json.dumps({
+            "undistort_camera_model": {
+                "width": 400, "height": 400,
+                "intrinsic": [[300, 0, 200], [0, 300, 200], [0, 0, 1]],
+            },
+            "frames": [{
+                "file_path": "left\\1.jpg", "timestamp": 1,
+                "transform_matrix": _look_at_c2w((3.0, -3.0, 1.3), (3.0, 2.0, 1.3)).tolist(),
+            }],
+        }), encoding="utf-8")
+        return path
+
+    def _door_bbox(self) -> list[float]:
+        pp = _load_core("photo_projection")
+        frame = pp.load_frames(self.root / "transforms.json")[0]
+        x0 = self.DOOR["center"] - self.DOOR["width"] / 2
+        x1 = self.DOOR["center"] + self.DOOR["width"] / 2
+        corners = np.array([
+            [x0, self.FACE_Y, 0.0], [x1, self.FACE_Y, 0.0],
+            [x1, self.FACE_Y, self.DOOR["head"]], [x0, self.FACE_Y, self.DOOR["head"]],
+        ])
+        uv, _, in_front = pp.project_points(frame, corners)
+        self.assertTrue(in_front.all())
+        return [float(uv[:, 0].min()), float(uv[:, 1].min()),
+                float(uv[:, 0].max()), float(uv[:, 1].max())]
+
+    def _observations(self, bbox: list[float]) -> dict:
+        return {
+            "schemaVersion": "1.0",
+            "captureFingerprint": "mcp-fixture-capture",
+            "observations": [{
+                "frameId": "transforms.json#0", "bbox": bbox, "label": "door",
+                "labelConfidence": 0.9, "observer": "mcp-test-vlm",
+            }],
+        }
+
+    def test_observation_grounds_to_a_candidate_without_writing(self):
+        self.handshake()
+        self.call_ok("init_scene", {"dataset": "mcp-semantic-001"})
+        self.call_ok("create_wall", {
+            "id": "wall_face", "start": [0, 2], "end": [6, 2], "thickness": 0.1, "height": 2.7,
+        })
+        transforms = self._write_transforms()
+        before = self.scene_path.read_bytes()
+        result = self.call_ok("submit_semantic_observations", {
+            "observations": self._observations(self._door_bbox()),
+            "transforms": str(transforms),
+            "ground_z": 0.0,
+        })
+        self.assertFalse(result["written"])
+        report = result["report"]
+        self.assertEqual(report["counts"], {
+            "observations": 1, "candidates": 1, "corroborated": 0, "unresolved": 0,
+        })
+        candidate = report["candidates"][0]
+        self.assertEqual(candidate["status"], "candidate")
+        self.assertEqual(candidate["coordinateSource"], "ray-cast-estimate")
+        self.assertTrue(candidate["requiresGeometryConfirmation"])
+        self.assertEqual(candidate["hostWallId"], "wall_face")
+        self.assertLess(abs(candidate["hostOffsetM"] - self.DOOR["center"]), 0.15)
+        self.assertLess(abs(candidate["widthM"] - self.DOOR["width"]), 0.15)
+        # Limited permissions: semantic-only confidence stays low, the label
+        # confidence never leaks through as a coordinate confidence.
+        self.assertLessEqual(candidate["confidence"], 0.4)
+        # Measurement only: the scene byte-for-byte unchanged, no node added.
+        self.assertEqual(self.scene_path.read_bytes(), before)
+        self.assertEqual(self.call_ok("get_scene_summary")["nodeCounts"], {"level": 1, "wall": 1})
+
+    def test_invalid_payload_is_rejected_fail_closed(self):
+        self.handshake()
+        self.call_ok("init_scene", {"dataset": "mcp-semantic-002"})
+        transforms = self._write_transforms()
+        bad = self._observations([10, 10, 20, 20])
+        # World coordinates smuggled next to the pixel box must be refused.
+        bad["observations"][0]["worldXYZ"] = [1.0, 2.0, 3.0]
+        payload, is_error = self.call_tool("submit_semantic_observations", {
+            "observations": bad, "transforms": str(transforms), "ground_z": 0.0,
+        })
+        self.assertTrue(is_error)
+        self.assertIn("OBSERVATIONS_INVALID", payload["message"])
+
+    def test_missing_transforms_is_a_tool_error(self):
+        self.handshake()
+        self.call_ok("init_scene", {"dataset": "mcp-semantic-003"})
+        payload, is_error = self.call_tool("submit_semantic_observations", {
+            "observations": self._observations([10, 10, 20, 20]),
+            "transforms": str(self.root / "no-transforms.json"),
+            "ground_z": 0.0,
+        })
+        self.assertTrue(is_error)
+        self.assertIn("TRANSFORMS_MISSING", payload["message"])
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ jobs:
       - run: python tests/scene-v2/test_fit_service.py
       - run: python tests/scene-v2/test_level_survey.py
       - run: python tests/scene-v2/test_photo_projection.py
+      - run: python tests/scene-v2/test_semantic_candidates.py
       - run: python tests/scene-v2/test_wall_dossier.py
       - run: python tests/scene-v2/test_scene_api.py
       - run: python tests/scene-v2/test_geometry_pipeline.py
