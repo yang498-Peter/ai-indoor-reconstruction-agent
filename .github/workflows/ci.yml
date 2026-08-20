@@ -21,8 +21,18 @@ jobs:
       - run: python tests/contracts/test_stage_contract.py
       - run: python tests/contracts/test_v2_publish_contract.py
       - run: python tests/contracts/test_capture_readiness.py
+      - run: python tests/contracts/test_evidence_independence.py
+      - run: python tests/contracts/test_execution_identity.py
+      - run: python tests/contracts/test_pipeline_execution_identity.py
       - run: python tests/scene-v2/test_scene_api.py
       - run: python tests/scene-v2/test_geometry_pipeline.py
       - run: python tests/scene-v2/test_geometry_workflow.py
+      - run: python tests/scene-v2/test_mcp_server.py
+      - run: python tests/scene-v2/test_static_renderers_v2.py
+      - run: python tests/scene-v2/test_structural_omission_audit.py
+      - run: python tests/scene-v2/test_scene_evidence_overlay.py
+      - run: python tests/scene-v2/test_cleanroom_macro_builder.py
+      - run: python tests/scene-v2/test_indexed_pointcloud_evidence.py
+      - run: python tests/scene-v2/test_viewer_presentation_stats.py
       - run: node --test tests/scene-v2/scene-core.test.mjs
       - run: python scene-core/make_sample_scene.py --output sample-out
