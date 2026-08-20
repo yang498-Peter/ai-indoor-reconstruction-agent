@@ -111,15 +111,122 @@ class LineObservation:
         }
 
 
+# Loop-drift duplicates of one wall face sit 8-30 cm apart and would otherwise
+# pair into a phantom wall whose "thickness" equals the drift magnitude.  A real
+# wall keeps a solid, point-free cavity between its faces, so the cavity/face
+# density ratio separates the two cases; colour continuity across the pair is a
+# secondary drift hint (a wall's two faces may share paint, hence colour alone
+# never decides).
+_DRIFT_FACE_CORRIDOR_M = 0.02
+_DRIFT_CAVITY_INSET_M = 0.02
+_DRIFT_MIN_COLOR_SAMPLE = 10
+
+
+def _pair_drift_evidence(
+    index: CaptureIndex,
+    *,
+    unit: np.ndarray,
+    normal: np.ndarray,
+    offsets: tuple[float, float],
+    along: tuple[float, float],
+    z_min: float | None,
+    z_max: float | None,
+) -> tuple[float | None, float | None]:
+    """Return (cavity/face point-density ratio, face RGB median delta in [0,1]).
+
+    Either value is ``None`` when it cannot be measured (degenerate band,
+    empty corridors, or a colourless index).
+    """
+    lo, hi = min(offsets), max(offsets)
+    cavity_lo = lo + _DRIFT_CAVITY_INSET_M
+    cavity_hi = hi - _DRIFT_CAVITY_INSET_M
+    along_start, along_end = along
+    span = along_end - along_start
+    if span <= 0.05 or cavity_hi - cavity_lo < 0.01:
+        return None, None
+    pad = _DRIFT_FACE_CORRIDOR_M + 0.01
+    xs = [unit[0] * a + normal[0] * o for a in (along_start, along_end) for o in (lo - pad, hi + pad)]
+    ys = [unit[1] * a + normal[1] * o for a in (along_start, along_end) for o in (lo - pad, hi + pad)]
+    points = index.query_bbox(min(xs), min(ys), max(xs), max(ys), z_min=z_min, z_max=z_max)
+    if points.point_count == 0:
+        return None, None
+    along_values = points.x * float(unit[0]) + points.y * float(unit[1])
+    offset_values = points.x * float(normal[0]) + points.y * float(normal[1])
+    keep = (along_values >= along_start) & (along_values <= along_end)
+    offset_values = offset_values[keep]
+    rgb = points.rgb[keep]
+    first_mask = np.abs(offset_values - offsets[0]) <= _DRIFT_FACE_CORRIDOR_M
+    second_mask = np.abs(offset_values - offsets[1]) <= _DRIFT_FACE_CORRIDOR_M
+    cavity_mask = (offset_values > cavity_lo) & (offset_values < cavity_hi) & ~first_mask & ~second_mask
+    face_count = int(first_mask.sum()) + int(second_mask.sum())
+    if face_count == 0:
+        return None, None
+    face_density = face_count / (2.0 * span * 2.0 * _DRIFT_FACE_CORRIDOR_M)
+    cavity_density = int(cavity_mask.sum()) / (span * (cavity_hi - cavity_lo))
+    cavity_ratio = float(cavity_density / face_density)
+    color_delta: float | None = None
+    if (
+        bool(index.manifest.get("hasColor"))
+        and int(first_mask.sum()) >= _DRIFT_MIN_COLOR_SAMPLE
+        and int(second_mask.sum()) >= _DRIFT_MIN_COLOR_SAMPLE
+    ):
+        first_color = np.median(rgb[first_mask].astype(np.float64), axis=0)
+        second_color = np.median(rgb[second_mask].astype(np.float64), axis=0)
+        # sqrt(3)*255 ~= 441.7; 443 keeps the historical normaliser stable.
+        color_delta = float(np.linalg.norm(first_color - second_color)) / 443.0
+    return cavity_ratio, color_delta
+
+
+def _merge_drift_faces(first: LineObservation, second: LineObservation) -> LineObservation:
+    """Fuse two drift copies of one face into a single support-weighted line.
+
+    The merged residuals understate the drift smear on purpose: the candidate
+    built from this observation carries ``driftMergedFrom`` and a review
+    warning, so acceptance still goes through a human/Agent transaction.
+    """
+    total = first.support_count + second.support_count
+    sin_sum = first.support_count * math.sin(2.0 * first.angle) + second.support_count * math.sin(2.0 * second.angle)
+    cos_sum = first.support_count * math.cos(2.0 * first.angle) + second.support_count * math.cos(2.0 * second.angle)
+    angle = (0.5 * math.atan2(sin_sum, cos_sum)) % math.pi
+    unit = np.asarray([math.cos(angle), math.sin(angle)], dtype=np.float64)
+    normal = np.asarray([-unit[1], unit[0]], dtype=np.float64)
+    first_offset = float(np.dot((first.start + first.end) * 0.5, normal))
+    second_offset = float(np.dot((second.start + second.end) * 0.5, normal))
+    offset = (first_offset * first.support_count + second_offset * second.support_count) / total
+    first_interval = first.interval(unit)
+    second_interval = second.interval(unit)
+    along_start = min(first_interval[0], second_interval[0])
+    along_end = max(first_interval[1], second_interval[1])
+    dominant = first if first.support_count >= second.support_count else second
+    return LineObservation.from_endpoints(
+        unit * along_start + normal * offset,
+        unit * along_end + normal * offset,
+        support_count=total,
+        residual_p50_m=max(first.residual_p50_m, second.residual_p50_m),
+        residual_p90_m=max(first.residual_p90_m, second.residual_p90_m),
+        observation_id=dominant.observation_id,
+    )
+
+
 def pair_wall_faces(
     faces: list[LineObservation],
     *,
+    index: CaptureIndex | None = None,
+    z_min: float | None = None,
+    z_max: float | None = None,
     min_thickness_m: float = 0.07,
     max_thickness_m: float = 0.45,
     angle_tolerance_deg: float = 4.0,
     min_overlap_m: float = 0.7,
-) -> list[dict[str, object]]:
-    candidates: list[tuple[float, int, int, dict[str, object]]] = []
+    cavity_ratio_threshold: float = 0.25,
+    color_delta_threshold: float = 0.12,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Pair parallel faces into wall hypotheses and split off drift duplicates.
+
+    Returns ``(walls, drift_merges)``.  Without an ``index`` no cavity/colour
+    evidence exists, so every candidate is treated as a normal pair.
+    """
+    candidates: list[tuple[float, int, int, dict[str, object], bool, float | None, float | None]] = []
     angle_tolerance = math.radians(angle_tolerance_deg)
     for first_index, first in enumerate(faces):
         for second_index in range(first_index + 1, len(faces)):
@@ -142,6 +249,27 @@ def pair_wall_faces(
             overlap = along_end - along_start
             if overlap < min_overlap_m:
                 continue
+            cavity_ratio: float | None = None
+            color_delta: float | None = None
+            if index is not None:
+                cavity_ratio, color_delta = _pair_drift_evidence(
+                    index,
+                    unit=unit,
+                    normal=normal,
+                    offsets=(first_offset, second_offset),
+                    along=(along_start, along_end),
+                    z_min=z_min,
+                    z_max=z_max,
+                )
+            drift_threshold = cavity_ratio_threshold
+            if color_delta is not None and color_delta < color_delta_threshold:
+                # Colour continuity raises drift suspicion but never decides
+                # alone: it only lowers the cavity-density threshold.
+                drift_threshold *= 0.7
+            is_drift = cavity_ratio is not None and cavity_ratio > drift_threshold
+            # High cavity occupancy penalises confidence so phantom walls stop
+            # outranking (and greedily displacing) real walls.
+            penalty = 1.0 if cavity_ratio is None else max(0.2, 1.0 - 2.0 * cavity_ratio)
             centre_offset = (first_offset + second_offset) * 0.5
             start = unit * along_start + normal * centre_offset
             end = unit * along_end + normal * centre_offset
@@ -154,7 +282,7 @@ def pair_wall_faces(
                 + 0.18 * min(1.0, overlap / 4.0)
                 + 0.14 * min(1.0, support / 1000.0)
                 + 0.12 * max(0.0, 1.0 - residual_p90 / 0.06),
-            )
+            ) * penalty
             face_ids = [first.observation_id or f"face-{first_index + 1}", second.observation_id or f"face-{second_index + 1}"]
             value = {
                 "wallMode": "paired-faces",
@@ -165,21 +293,37 @@ def pair_wall_faces(
                 "supportPointCount": support,
                 "fitResidualP50M": round(residual_p50, 5),
                 "fitResidualP90M": round(residual_p90, 5),
+                "cavityPointRatio": None if cavity_ratio is None else round(cavity_ratio, 4),
+                "faceColorDeltaNorm": None if color_delta is None else round(color_delta, 4),
                 "confidence": round(confidence, 4),
             }
-            score = overlap * max(1.0, math.log2(support + 1)) / max(0.01, residual_p90 + 0.01)
-            candidates.append((score, first_index, second_index, value))
+            score = overlap * max(1.0, math.log2(support + 1)) / max(0.01, residual_p90 + 0.01) * penalty
+            candidates.append((score, first_index, second_index, value, is_drift, cavity_ratio, color_delta))
 
     # A face cannot justify two wall thickness hypotheses.  Prefer the pair
-    # with the strongest overlap/support/residual score.
+    # with the strongest overlap/support/residual score; drift pairs consume
+    # their faces too, but merge into one observation instead of a wall.
     used: set[int] = set()
     accepted: list[dict[str, object]] = []
-    for _score, first_index, second_index, value in sorted(candidates, key=lambda item: item[0], reverse=True):
+    merged: list[dict[str, object]] = []
+    for _score, first_index, second_index, value, is_drift, cavity_ratio, color_delta in sorted(
+        candidates, key=lambda item: item[0], reverse=True
+    ):
         if first_index in used or second_index in used:
             continue
         used.update((first_index, second_index))
-        accepted.append(value)
-    return accepted
+        if is_drift:
+            merged.append(
+                {
+                    "observation": _merge_drift_faces(faces[first_index], faces[second_index]),
+                    "driftMergedFrom": list(value["sourceFaceIds"]),
+                    "cavityPointRatio": None if cavity_ratio is None else round(cavity_ratio, 4),
+                    "faceColorDeltaNorm": None if color_delta is None else round(color_delta, 4),
+                }
+            )
+        else:
+            accepted.append(value)
+    return accepted, merged
 
 
 def _refine_observation(
@@ -415,9 +559,45 @@ def build_proposals(
         if refined is not None and refined.length >= min_length_m:
             observations.append(refined)
     observations = _deduplicate_observations(observations)
-    paired = pair_wall_faces(observations, min_overlap_m=min_length_m * 0.7)
+    paired, drift_merged = pair_wall_faces(
+        observations,
+        index=index,
+        z_min=floor_z + band_min_m,
+        z_max=floor_z + band_max_m,
+        min_overlap_m=min_length_m * 0.7,
+    )
     paired_face_ids = {face_id for item in paired for face_id in item["sourceFaceIds"]}
+    paired_face_ids.update(face_id for item in drift_merged for face_id in item["driftMergedFrom"])
     candidates = list(paired)
+    for merge in drift_merged:
+        observation = merge["observation"]
+        confidence = min(
+            0.78,
+            0.30
+            + 0.20 * min(1.0, observation.length / 4.0)
+            + 0.16 * min(1.0, observation.support_count / 700.0)
+            + 0.10 * max(0.0, 1.0 - observation.residual_p90_m / 0.06),
+        )
+        candidates.append(
+            {
+                "wallMode": "single-face",
+                "sourceFaceIds": list(merge["driftMergedFrom"]),
+                "driftMergedFrom": list(merge["driftMergedFrom"]),
+                "cavityPointRatio": merge["cavityPointRatio"],
+                "faceColorDeltaNorm": merge["faceColorDeltaNorm"],
+                "rawCenterline": {"start": _point(observation.start), "end": _point(observation.end)},
+                "thicknessM": 0.12,
+                "lengthM": round(observation.length, 4),
+                "supportPointCount": observation.support_count,
+                "fitResidualP50M": round(observation.residual_p50_m, 5),
+                "fitResidualP90M": round(observation.residual_p90_m, 5),
+                "confidence": round(confidence, 4),
+                "warning": (
+                    "parallel faces were merged as loop-drift copies of one wall face; "
+                    "centreline and thickness require review"
+                ),
+            }
+        )
     for observation in observations:
         if observation.observation_id in paired_face_ids:
             continue
@@ -472,6 +652,10 @@ def build_proposals(
             f"{raster_cell_m} to {degraded_cell_m}"
         )
         warnings.append(degradation_reason)
+    if drift_merged:
+        warnings.append(
+            f"{len(drift_merged)} parallel face pair(s) were merged as loop-drift copies of a single wall face"
+        )
     if not paired:
         warnings.append("no parallel wall-face pairs were found; all thicknesses remain single-face defaults")
     if len(families) < 2:

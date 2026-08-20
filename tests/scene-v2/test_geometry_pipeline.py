@@ -71,6 +71,38 @@ def synthetic_room(path: Path) -> tuple[float, float]:
     return origin_x, origin_y
 
 
+def write_colored_cloud(path: Path, rows: list[tuple[float, float, float]], colors: list[tuple[int, int, int]]) -> None:
+    xyz = np.asarray(rows, dtype=np.float64)
+    rgb = np.asarray(colors, dtype=np.uint16) * 257
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = np.asarray([0.001, 0.001, 0.001])
+    las = laspy.LasData(header)
+    las.x, las.y, las.z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    las.red, las.green, las.blue = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    las.write(path)
+
+
+def face_points(y: float, color: tuple[int, int, int]) -> tuple[list, list]:
+    rows: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    for x in np.linspace(0.0, 6.0, 121):
+        for z in np.linspace(0.35, 2.55, 12):
+            rows.append((float(x), y, float(z)))
+            colors.append(color)
+    return rows, colors
+
+
+def cavity_points(y_values: list[float], z_count: int, color: tuple[int, int, int]) -> tuple[list, list]:
+    rows: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    for x in np.linspace(0.05, 5.95, 61):
+        for y in y_values:
+            for z in np.linspace(0.4, 2.4, z_count):
+                rows.append((float(x), float(y), float(z)))
+                colors.append(color)
+    return rows, colors
+
+
 class CaptureIndexTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -162,7 +194,8 @@ class GeometryProposalAndMetricTest(unittest.TestCase):
             proposals.LineObservation.from_endpoints([0.0, -0.1], [6.0, -0.1], support_count=400),
             proposals.LineObservation.from_endpoints([0.0, 0.1], [6.0, 0.1], support_count=380),
         ]
-        walls = proposals.pair_wall_faces(faces, min_thickness_m=0.08, max_thickness_m=0.35)
+        walls, drift_merged = proposals.pair_wall_faces(faces, min_thickness_m=0.08, max_thickness_m=0.35)
+        self.assertEqual(drift_merged, [])
         self.assertEqual(len(walls), 1)
         self.assertAlmostEqual(walls[0]["thicknessM"], 0.2, places=3)
         self.assertAlmostEqual(walls[0]["rawCenterline"]["start"][1], 0.0, places=3)
@@ -219,6 +252,124 @@ class GeometryProposalAndMetricTest(unittest.TestCase):
         self.assertEqual(shifted["status"], "FAIL")
         self.assertTrue(shifted["hardGateFailures"])
         self.assertGreater(shifted["wallMetrics"][0]["residualP90M"], 0.06)
+
+
+class DriftPhantomWallTest(unittest.TestCase):
+    """P1-3 regression: loop-drift twin faces must merge, real walls must pair."""
+
+    BASE_COLOR = (180, 150, 120)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _index_for(self, rows: list, colors: list, name: str = "cloud"):
+        las = self.root / f"{name}.las"
+        write_colored_cloud(las, rows, colors)
+        index_dir = self.root / f"{name}-index"
+        capture_index.build_index(las, index_dir, tile_size_m=2.0, every=1)
+        return capture_index.CaptureIndex.open(index_dir)
+
+    def _faces(self):
+        return [
+            proposals.LineObservation.from_endpoints(
+                [0.0, 0.0], [6.0, 0.0], support_count=1452, observation_id="face-a"
+            ),
+            proposals.LineObservation.from_endpoints(
+                [0.0, 0.15], [6.0, 0.15], support_count=1452, observation_id="face-b"
+            ),
+        ]
+
+    def _pair(self, index):
+        return proposals.pair_wall_faces(
+            self._faces(),
+            index=index,
+            z_min=0.3,
+            z_max=2.6,
+            min_thickness_m=0.08,
+            max_thickness_m=0.35,
+        )
+
+    def test_drift_double_line_merges_into_single_face(self):
+        rows, colors = face_points(0.0, self.BASE_COLOR)
+        more, more_colors = face_points(0.15, self.BASE_COLOR)
+        rows += more
+        colors += more_colors
+        # The drift smear leaves points all through the would-be wall cavity.
+        cavity, cavity_colors = cavity_points(list(np.linspace(0.04, 0.11, 5)), 6, self.BASE_COLOR)
+        rows += cavity
+        colors += cavity_colors
+        walls, merged = self._pair(self._index_for(rows, colors))
+        self.assertEqual(walls, [])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["driftMergedFrom"], ["face-a", "face-b"])
+        self.assertGreater(merged[0]["cavityPointRatio"], 0.25)
+        self.assertIsNotNone(merged[0]["faceColorDeltaNorm"])
+        self.assertLess(merged[0]["faceColorDeltaNorm"], 0.12)
+        observation = merged[0]["observation"]
+        # Equal support -> the merged face sits at the support-weighted middle.
+        self.assertAlmostEqual(float(observation.start[1]), 0.075, places=3)
+        self.assertAlmostEqual(float(observation.end[1]), 0.075, places=3)
+        self.assertEqual(observation.support_count, 2904)
+
+    def test_true_wall_with_empty_cavity_still_pairs(self):
+        rows, colors = face_points(0.0, self.BASE_COLOR)
+        more, more_colors = face_points(0.15, self.BASE_COLOR)
+        rows += more
+        colors += more_colors
+        walls, merged = self._pair(self._index_for(rows, colors))
+        self.assertEqual(merged, [])
+        self.assertEqual(len(walls), 1)
+        self.assertAlmostEqual(walls[0]["thicknessM"], 0.15, places=3)
+        self.assertLess(walls[0]["cavityPointRatio"], 0.05)
+        self.assertIsNotNone(walls[0]["faceColorDeltaNorm"])
+        self.assertGreater(walls[0]["confidence"], 0.9)
+
+    def test_color_consistency_weights_gray_zone_but_never_decides_alone(self):
+        gray_cavity = [0.05, 0.10]
+
+        rows, colors = face_points(0.0, self.BASE_COLOR)
+        more, more_colors = face_points(0.15, self.BASE_COLOR)
+        cavity, cavity_colors = cavity_points(gray_cavity, 7, self.BASE_COLOR)
+        walls, merged = self._pair(self._index_for(rows + more + cavity, colors + more_colors + cavity_colors))
+        self.assertEqual(walls, [])
+        self.assertEqual(len(merged), 1)
+        self.assertLess(merged[0]["cavityPointRatio"], 0.25)
+
+        rows, colors = face_points(0.0, (200, 60, 60))
+        more, more_colors = face_points(0.15, (60, 60, 200))
+        cavity, cavity_colors = cavity_points(gray_cavity, 7, (200, 60, 60))
+        walls, merged = self._pair(
+            self._index_for(rows + more + cavity, colors + more_colors + cavity_colors, name="two-tone")
+        )
+        self.assertEqual(merged, [])
+        self.assertEqual(len(walls), 1)
+        self.assertGreater(walls[0]["faceColorDeltaNorm"], 0.12)
+        self.assertLess(walls[0]["cavityPointRatio"], 0.25)
+        # The residual cavity occupancy still discounts the pair's confidence.
+        self.assertLess(walls[0]["confidence"], 0.75)
+
+    def test_build_proposals_reports_drift_merge_and_no_phantom_wall(self):
+        rows, colors = face_points(0.0, self.BASE_COLOR)
+        more, more_colors = face_points(0.15, self.BASE_COLOR)
+        cavity, cavity_colors = cavity_points(list(np.linspace(0.04, 0.11, 5)), 6, self.BASE_COLOR)
+        index = self._index_for(rows + more + cavity, colors + more_colors + cavity_colors)
+        report = proposals.build_proposals(
+            index,
+            floor_z=0.0,
+            band_min_m=0.45,
+            band_max_m=2.45,
+            raster_cell_m=0.04,
+            min_length_m=1.0,
+            max_points=100_000,
+        )
+        candidates = report["wallCandidates"]
+        self.assertTrue(any("driftMergedFrom" in candidate for candidate in candidates))
+        self.assertFalse(any(candidate["wallMode"] == "paired-faces" for candidate in candidates))
+        self.assertTrue(any("loop-drift" in warning for warning in report["warnings"]))
 
 
 if __name__ == "__main__":
