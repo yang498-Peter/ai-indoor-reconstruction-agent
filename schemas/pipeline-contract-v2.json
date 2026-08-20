@@ -99,7 +99,7 @@
       "requiredCapabilities": ["visual-inspection", "topology-check", "overlap-check"],
       "requiredArtifacts": ["global-review-receipt"],
       "requiredArtifactChecks": {
-        "global-review-receipt": ["topology", "joints", "openings", "collisions", "omission", "support"]
+        "global-review-receipt": ["topology", "joints", "openings", "collisions", "omission", "support", "scoreGate"]
       },
       "sceneBinding": "authority",
       "blocksOnOpenIssues": true,
@@ -116,6 +116,20 @@
       "evaluator": "publish_v2"
     }
   ],
+  "checkProvenance": {
+    "selfReported": [
+      "indexChecksumsValid", "levelDispositionExplicit", "poseCapabilityValidated",
+      "observationsSeparated", "floorEnvelopeNotShell", "topologyCandidatesPresent",
+      "viewerLoad", "framing",
+      "requiredRegionsReviewed", "currentRenderBound",
+      "joints", "openings"
+    ],
+    "recomputed": [
+      "authorityUnmodified",
+      "allEligibleProposalsDisposed",
+      "topology", "collisions", "omission", "support", "scoreGate"
+    ]
+  },
   "changeInvalidation": {
     "evidence": {
       "reviewStage": "evidence",

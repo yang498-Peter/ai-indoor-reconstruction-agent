@@ -135,6 +135,11 @@ class V2PublishContractTest(unittest.TestCase):
             "reviewedAt": datetime.now(timezone.utc).isoformat(),
             "p0": [],
             "p1": [],
+            "areas": [
+                {"id": "main-room", "score": 92},
+                {"id": "perimeter-envelope", "score": 90},
+            ],
+            "score": 91,
         }
 
     def _evaluate(self) -> dict:
@@ -207,6 +212,64 @@ class V2PublishContractTest(unittest.TestCase):
         self.assertTrue(report["checks"]["evidenceLineagesDistinct"])
         self.assertEqual(report["checks"]["sharedRootCount"], 1)
 
+    def _write_review(self, **overrides) -> None:
+        receipt = self._review_receipt()
+        receipt.update(overrides)
+        self.review_path.write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_review_area_score_below_85_fails_score_gate(self) -> None:
+        self._write_review(
+            areas=[{"id": "main-room", "score": 84}, {"id": "west-wing", "score": 95}],
+            score=93,
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertFalse(report["checks"]["reviewScoreGate"])
+        self.assertEqual(report["checks"]["reviewMinAreaScore"], 84)
+        self.assertTrue(
+            any(error.startswith("REVIEW_SCORE_BELOW_GATE") for error in report["errors"])
+        )
+
+    def test_review_total_score_below_90_fails_score_gate(self) -> None:
+        self._write_review(
+            areas=[{"id": "main-room", "score": 88}, {"id": "west-wing", "score": 89}],
+            score=89,
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertFalse(report["checks"]["reviewScoreGate"])
+        self.assertTrue(
+            any(error.startswith("REVIEW_SCORE_BELOW_GATE") for error in report["errors"])
+        )
+
+    def test_review_scores_at_86_and_91_pass_score_gate(self) -> None:
+        self._write_review(
+            areas=[{"id": "main-room", "score": 86}, {"id": "west-wing", "score": 92}],
+            score=91,
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "PASS")
+        self.assertTrue(report["checks"]["reviewScoreGate"])
+        self.assertEqual(report["checks"]["reviewMinAreaScore"], 86)
+        self.assertEqual(report["checks"]["reviewTotalScore"], 91)
+
+    def test_review_without_scores_fails_closed(self) -> None:
+        receipt = self._review_receipt()
+        receipt.pop("areas")
+        receipt.pop("score")
+        self.review_path.write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("REVIEW_SCORE_MISSING", report["errors"])
+        self.assertEqual(report["checks"]["reviewAreaCount"], 0)
+        self.assertIsNone(report["checks"]["reviewMinAreaScore"])
+
     def test_stale_claim_snapshot_is_an_explicit_quality_failure(self) -> None:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
         scene["nodes"]["wall_a"]["end"] = [4.5, 0.0]
@@ -274,6 +337,9 @@ class V2PublishContractTest(unittest.TestCase):
                 state["stages"][name]["sceneSha256"] = legacy_sha
                 state["stages"][name]["evaluation"] = {
                     "evaluator": state["stages"][name]["evaluator"],
+                    "evaluatorVersion": self.loop.EVALUATOR_VERSIONS[
+                        state["stages"][name]["evaluator"]
+                    ],
                     "evaluatorCodeSha256": self.loop.sha256_file(LOOP_MODULE),
                     "pipelineContractDigest": self.loop.PIPELINE_CONTRACT_DIGEST,
                     "result": "PASS",
@@ -338,6 +404,9 @@ class V2PublishContractTest(unittest.TestCase):
                 state["stages"][name]["sceneSha256"] = scene_artifact_sha
                 state["stages"][name]["evaluation"] = {
                     "evaluator": state["stages"][name]["evaluator"],
+                    "evaluatorVersion": self.loop.EVALUATOR_VERSIONS[
+                        state["stages"][name]["evaluator"]
+                    ],
                     "evaluatorCodeSha256": self.loop.sha256_file(LOOP_MODULE),
                     "pipelineContractDigest": self.loop.PIPELINE_CONTRACT_DIGEST,
                     "result": "PASS",

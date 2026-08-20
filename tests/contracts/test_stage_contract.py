@@ -332,9 +332,9 @@ class PipelineStageContractTest(unittest.TestCase):
             loop.save_state(self.state_path, stale)
         self.assertEqual(caught.exception.code, "STATE_REVISION_CONFLICT")
 
-    def test_evaluator_code_change_makes_prerequisite_stale(self) -> None:
+    def test_evaluator_version_change_makes_prerequisite_stale(self) -> None:
         state = loop.read_state(self.state_path)
-        state["stages"]["intake"]["evaluation"]["evaluatorCodeSha256"] = "0" * 64
+        state["stages"]["intake"]["evaluation"]["evaluatorVersion"] = "outdated"
         state["capabilities"]["point-cloud-sections"]["status"] = "AVAILABLE"
         loop.event(state, "contract-fixture", "tamper-evaluator-binding", {})
         loop.save_state(self.state_path, state)
@@ -355,6 +355,93 @@ class PipelineStageContractTest(unittest.TestCase):
             caught.exception.code,
             "STAGE_PREREQUISITE_INCOMPLETE_OR_STALE",
         )
+
+    def test_evaluator_code_sha_is_provenance_only(self) -> None:
+        # The whole-file sha stays recorded but no longer decides staleness;
+        # only a version bump of the concrete evaluator invalidates a stage.
+        state = loop.read_state(self.state_path)
+        state["stages"]["intake"]["evaluation"]["evaluatorCodeSha256"] = "0" * 64
+        state["capabilities"]["point-cloud-sections"]["status"] = "AVAILABLE"
+        loop.event(state, "contract-fixture", "tamper-code-sha-only", {})
+        loop.save_state(self.state_path, state)
+        evidence = self.artifact("evidence-bundle")
+        loop.command_evaluate_stage(
+            self.args(
+                state=self.state_path,
+                actor="evidence-agent",
+                execution=self.evidence_identity,
+                name="evidence",
+                artifact=[f"evidence-bundle={evidence}"],
+                scene=None,
+                note="code sha alone must not invalidate",
+            )
+        )
+        updated = loop.read_state(self.state_path)
+        self.assertEqual(updated["stages"]["evidence"]["status"], "PASS")
+        self.assertEqual(
+            updated["stages"]["evidence"]["evaluation"]["evaluatorVersion"],
+            loop.EVALUATOR_VERSIONS["evaluate_evidence"],
+        )
+
+    def test_evaluator_versions_cover_every_stage(self) -> None:
+        for stage in loop.PIPELINE_CONTRACT["stages"]:
+            self.assertIn(stage["evaluator"], loop.EVALUATOR_VERSIONS)
+            self.assertTrue(str(loop.EVALUATOR_VERSIONS[stage["evaluator"]]).strip())
+        self.assertEqual(len(loop.PIPELINE_CONTRACT["stages"]), 9)
+
+    def test_check_provenance_partitions_checks_and_matches_recomputers(self) -> None:
+        provenance = loop.PIPELINE_CONTRACT["checkProvenance"]
+        self_reported = set(provenance["selfReported"])
+        recomputed = set(provenance["recomputed"])
+        contract_checks = {
+            name
+            for stage in loop.PIPELINE_CONTRACT["stages"]
+            for names in stage["requiredArtifactChecks"].values()
+            for name in names
+        }
+        self.assertEqual(self_reported & recomputed, set())
+        self.assertEqual(self_reported | recomputed, contract_checks)
+        self.assertEqual(
+            {name for _, name in loop.CHECK_RECOMPUTERS},
+            recomputed,
+        )
+        # Human-judgment checks stay self-reported and are declared as such.
+        self.assertIn("viewerLoad", self_reported)
+        self.assertIn("framing", self_reported)
+
+    def test_version_bump_invalidates_only_matching_stage(self) -> None:
+        state = loop.read_state(self.state_path)
+        state["capabilities"]["point-cloud-sections"]["status"] = "AVAILABLE"
+        loop.event(state, "contract-fixture", "enable-capability", {})
+        loop.save_state(self.state_path, state)
+        evidence = self.artifact("evidence-bundle")
+        loop.command_evaluate_stage(
+            self.args(
+                state=self.state_path,
+                actor="evidence-agent",
+                execution=self.evidence_identity,
+                name="evidence",
+                artifact=[f"evidence-bundle={evidence}"],
+                scene=None,
+                note="pass evidence",
+            )
+        )
+        state = loop.read_state(self.state_path)
+        original = loop.EVALUATOR_VERSIONS["evaluate_evidence"]
+        try:
+            loop.EVALUATOR_VERSIONS["evaluate_evidence"] = original + "-bumped"
+            # The stage recording the bumped evaluator becomes stale...
+            with self.assertRaises(loop.WorkflowError) as caught:
+                loop.require_prerequisites(state, "macro-hypothesis")
+            self.assertEqual(
+                caught.exception.code, "STAGE_PREREQUISITE_INCOMPLETE_OR_STALE"
+            )
+            self.assertIn("evidence", str(caught.exception))
+            # ...while stages recorded by untouched evaluators stay valid.
+            loop.require_prerequisites(state, "evidence")
+        finally:
+            loop.EVALUATOR_VERSIONS["evaluate_evidence"] = original
+        loop.require_prerequisites(state, "macro-hypothesis")
 
     def test_modified_prerequisite_artifact_bytes_block_downstream_stage(self) -> None:
         state = loop.read_state(self.state_path)

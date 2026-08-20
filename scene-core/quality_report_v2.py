@@ -30,6 +30,7 @@ QUALITY_CONFIG = {
     "requireResolvedEvidence": True,
     "requireDeclaredSpace": True,
     "blockingIssueSeverities": ["P0", "P1"],
+    "reviewScoreGate": {"minAreaScore": 85, "minTotalScore": 90},
 }
 
 
@@ -76,6 +77,40 @@ def _parse_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(timezone.utc)
+
+
+def _review_area_scores(review: dict[str, Any]) -> tuple[list[tuple[str, int]], int] | None:
+    """Parse per-area scores and the total score from a review receipt.
+
+    Returns None when scores are absent or malformed; the caller fails closed
+    with REVIEW_SCORE_MISSING rather than assuming an unscored PASS.
+    """
+    areas = review.get("areas")
+    total = review.get("score")
+    if (
+        not isinstance(areas, list)
+        or not areas
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or not 0 <= total <= 100
+    ):
+        return None
+    parsed: list[tuple[str, int]] = []
+    for area in areas:
+        if not isinstance(area, dict):
+            return None
+        area_id = area.get("id") or area.get("areaId")
+        score = area.get("score")
+        if (
+            not isinstance(area_id, str)
+            or not area_id.strip()
+            or not isinstance(score, int)
+            or isinstance(score, bool)
+            or not 0 <= score <= 100
+        ):
+            return None
+        parsed.append((area_id.strip(), score))
+    return parsed, total
 
 
 def _resolve_source(scene_path: Path, source_path: str) -> Path:
@@ -269,6 +304,30 @@ def evaluate_scene(
     if not no_review_findings:
         errors.append("REVIEW_HAS_BLOCKING_FINDINGS")
 
+    # SKILL score promise, machine-enforced: every reviewed area scores at
+    # least 85 and the receipt total is at least 90. A receipt without scores
+    # cannot pass.
+    gate = QUALITY_CONFIG["reviewScoreGate"]
+    review_area_scores = _review_area_scores(review)
+    if review_area_scores is None:
+        review_min_area_score: int | None = None
+        review_total_score: int | None = None
+        review_score_gate = False
+        errors.append("REVIEW_SCORE_MISSING")
+    else:
+        area_entries, review_total_score = review_area_scores
+        review_min_area_score = min(score for _, score in area_entries)
+        review_score_gate = (
+            review_min_area_score >= gate["minAreaScore"]
+            and review_total_score >= gate["minTotalScore"]
+        )
+        if not review_score_gate:
+            errors.append("REVIEW_SCORE_BELOW_GATE:" + ",".join(
+                f"{area_id}={score}"
+                for area_id, score in area_entries
+                if score < gate["minAreaScore"]
+            ) + f";total={review_total_score}")
+
     checks = {
         "sceneV2Valid": scene_valid,
         "authorityLayerValid": authority_layer_valid,
@@ -284,6 +343,12 @@ def evaluate_scene(
         "reviewIdentityIndependent": review_identity_independent,
         "reviewBindingCurrent": review_binding_valid,
         "reviewHasNoP0P1": no_review_findings,
+        "reviewAreaCount": (
+            len(review_area_scores[0]) if review_area_scores is not None else 0
+        ),
+        "reviewMinAreaScore": review_min_area_score,
+        "reviewTotalScore": review_total_score,
+        "reviewScoreGate": review_score_gate,
     }
     return {
         "schemaVersion": REPORT_SCHEMA_VERSION,

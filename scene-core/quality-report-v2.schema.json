@@ -52,7 +52,11 @@
         "reviewIdentityValid",
         "reviewIdentityIndependent",
         "reviewBindingCurrent",
-        "reviewHasNoP0P1"
+        "reviewHasNoP0P1",
+        "reviewAreaCount",
+        "reviewMinAreaScore",
+        "reviewTotalScore",
+        "reviewScoreGate"
       ],
       "properties": {
         "sceneV2Valid": {"type": "boolean"},
@@ -68,7 +72,21 @@
         "reviewIdentityValid": {"type": "boolean"},
         "reviewIdentityIndependent": {"type": "boolean"},
         "reviewBindingCurrent": {"type": "boolean"},
-        "reviewHasNoP0P1": {"type": "boolean"}
+        "reviewHasNoP0P1": {"type": "boolean"},
+        "reviewAreaCount": {"type": "integer", "minimum": 0},
+        "reviewMinAreaScore": {
+          "anyOf": [
+            {"type": "integer", "minimum": 0, "maximum": 100},
+            {"type": "null"}
+          ]
+        },
+        "reviewTotalScore": {
+          "anyOf": [
+            {"type": "integer", "minimum": 0, "maximum": 100},
+            {"type": "null"}
+          ]
+        },
+        "reviewScoreGate": {"type": "boolean"}
       }
     },
     "errors": {"type": "array", "items": {"type": "string"}}

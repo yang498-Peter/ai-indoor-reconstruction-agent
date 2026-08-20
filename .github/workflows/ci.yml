@@ -24,6 +24,13 @@ jobs:
       - run: python tests/contracts/test_evidence_independence.py
       - run: python tests/contracts/test_execution_identity.py
       - run: python tests/contracts/test_pipeline_execution_identity.py
+      - run: python tests/contracts/test_intake_revalidation.py
+      - run: python tests/contracts/test_check_recompute.py
+      - run: python tests/scene-v2/test_degraded_geometry_services.py
+      - run: python tests/scene-v2/test_opening_candidates.py
+      - run: python tests/scene-v2/test_wall_graph_adjust.py
+      - run: python tests/scene-v2/test_fit_service.py
+      - run: python tests/scene-v2/test_level_survey.py
       - run: python tests/scene-v2/test_scene_api.py
       - run: python tests/scene-v2/test_geometry_pipeline.py
       - run: python tests/scene-v2/test_geometry_workflow.py

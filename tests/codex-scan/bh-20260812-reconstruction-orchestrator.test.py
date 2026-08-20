@@ -49,13 +49,17 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
                 {
                     "schemaVersion": "2.0",
                     "job": {"id": "indoor-test"},
-                    "nodes": [],
-                    "evidence": [],
+                    "nodes": {},
+                    "evidence": {},
                     "review": {"issues": []},
                 }
             )
             + "\n",
             encoding="utf-8",
+        )
+        self.proposals = self.root / "proposals.json"
+        self.proposals.write_text(
+            json.dumps({"wallCandidates": []}) + "\n", encoding="utf-8"
         )
         self.raw.write_bytes(b"raw-evidence")
         self.render.write_bytes(b"render-evidence")
@@ -187,6 +191,20 @@ class ReconstructionOrchestratorTest(unittest.TestCase):
                 },
                 "fixture": artifact_type,
             }
+            # Minimal recompute inputs so the independent evaluators can
+            # verify the self-reported checks instead of trusting them.
+            if artifact_type == "presentation-review-receipt":
+                payload["sceneSha256"] = scene_sha or loop.sha256_file(self.scene)
+            elif artifact_type == "regional-review-receipt":
+                payload["areas"] = [{"id": "west-wing", "score": 92}]
+            elif artifact_type == "omission-audit":
+                payload["recompute"] = {"proposalsPath": str(self.proposals)}
+                payload["dispositions"] = {}
+            elif artifact_type == "global-review-receipt":
+                payload["areas"] = [{"id": "west-wing", "score": 92}]
+                payload["score"] = 93
+                payload["recompute"] = {"proposalsPath": str(self.proposals)}
+                payload["dispositions"] = {}
             payload_digest = hashlib.sha256(
                 json.dumps(
                     payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")

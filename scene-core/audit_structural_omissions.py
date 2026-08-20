@@ -31,6 +31,35 @@ def _eligible(candidate: dict) -> bool:
     )
 
 
+# Audit rankings that still await a review are not disposals.
+PENDING_DISPOSITIONS = {"", "LOCAL_ELEVATION_REVIEW", "PARTIAL_SEGMENT_REVIEW"}
+
+
+def undisposed_eligible_candidates(
+    proposals: dict, scene: dict, dispositions: dict[str, str],
+) -> list[str]:
+    """List eligible, scene-unexplained candidate ids without a final disposition.
+
+    Index-free companion of :func:`audit`: the height-support ranking needs the
+    point index, but the disposal gate only needs eligibility, the current
+    scene explanation, and the recorded dispositions. Orchestration evaluators
+    recompute this against the live scene so an artifact cannot simply claim
+    ``allEligibleProposalsDisposed``.
+    """
+    segments, source_ids = _scene_wall_segments(scene)
+    undisposed: list[str] = []
+    for candidate in proposals.get("wallCandidates", []):
+        if not _eligible(candidate):
+            continue
+        if _proposal_explanation(candidate, segments, source_ids)["explained"]:
+            continue
+        candidate_id = str(candidate["id"])
+        disposition = str(dispositions.get(candidate_id) or "").strip()
+        if disposition in PENDING_DISPOSITIONS:
+            undisposed.append(candidate_id)
+    return undisposed
+
+
 def _longest_run(mask: np.ndarray, bin_size: float) -> float:
     best = current = 0
     for value in mask:

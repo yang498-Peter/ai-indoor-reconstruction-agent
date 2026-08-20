@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "$schema", "schemaVersion", "artifactType", "stateSchemaVersion",
-    "executionIdentity", "stages", "changeInvalidation"
+    "executionIdentity", "stages", "checkProvenance", "changeInvalidation"
   ],
   "properties": {
     "$schema": {"type": "string", "minLength": 1},
@@ -32,6 +32,21 @@
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/stage"}
     },
+    "checkProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selfReported", "recomputed"],
+      "properties": {
+        "selfReported": {
+          "type": "array", "uniqueItems": true,
+          "items": {"$ref": "#/$defs/checkName"}
+        },
+        "recomputed": {
+          "type": "array", "uniqueItems": true,
+          "items": {"$ref": "#/$defs/checkName"}
+        }
+      }
+    },
     "changeInvalidation": {
       "type": "object",
       "minProperties": 1,
@@ -40,6 +55,7 @@
   },
   "$defs": {
     "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "checkName": {"type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9-]*$"},
     "stage": {
       "type": "object",
       "additionalProperties": false,
@@ -54,7 +70,7 @@
           "additionalProperties": {
             "type": "array",
             "uniqueItems": true,
-            "items": {"$ref": "#/$defs/name"}
+            "items": {"$ref": "#/$defs/checkName"}
           }
         },
         "sceneBinding": {"enum": ["none", "authority"]},

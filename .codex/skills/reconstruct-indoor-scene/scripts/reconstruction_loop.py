@@ -35,6 +35,21 @@ STAGE_REQUIREMENTS = {
     stage["name"]: tuple(stage["requiredCapabilities"])
     for stage in PIPELINE_CONTRACT["stages"]
 }
+# Per-evaluator behavior versions. Prerequisite freshness compares these
+# constants, not the whole-file sha: bumping one entry invalidates only the
+# stages that recorded that evaluator, instead of every PASS on any edit.
+# Bump the matching entry whenever an evaluator's decision logic changes.
+EVALUATOR_VERSIONS = {
+    "initialize_intake": "1",
+    "evaluate_evidence": "1",
+    "evaluate_macro_hypothesis": "1",
+    "evaluate_seed": "1",
+    "evaluate_author": "1",
+    "evaluate_presentation_review": "2",
+    "evaluate_regional_review": "2",
+    "evaluate_global_review": "2",
+    "publish_v2": "1",
+}
 STAGE_STATES = {"PENDING", "IN_PROGRESS", "REVIEW", "PASS", "BLOCKED", "FAILED"}
 CAPABILITY_STATES = {"UNVERIFIED", "AVAILABLE", "DEGRADED", "BLOCKED"}
 ISSUE_STATES = {"OPEN", "PATCHED", "NEEDS_RECHECK", "RESOLVED"}
@@ -100,6 +115,25 @@ def validate_pipeline_contract() -> None:
                 "PIPELINE_CONTRACT_INVALID",
             )
         seen.add(stage["name"])
+        if stage["evaluator"] not in EVALUATOR_VERSIONS:
+            raise WorkflowError(
+                f"stage evaluator {stage['evaluator']} has no registered version",
+                "PIPELINE_CONTRACT_INVALID",
+            )
+    provenance = PIPELINE_CONTRACT.get("checkProvenance", {})
+    self_reported = set(provenance.get("selfReported", []))
+    recomputed = set(provenance.get("recomputed", []))
+    contract_checks = {
+        name
+        for stage in PIPELINE_CONTRACT.get("stages", [])
+        for names in stage["requiredArtifactChecks"].values()
+        for name in names
+    }
+    if self_reported & recomputed or contract_checks != self_reported | recomputed:
+        raise WorkflowError(
+            "pipeline contract checkProvenance must partition every required check",
+            "PIPELINE_CONTRACT_INVALID",
+        )
     for change in PIPELINE_CONTRACT.get("changeInvalidation", {}).values():
         names = list(change.get("pendingStages", []))
         if change.get("reviewStage") is not None:
@@ -395,6 +429,7 @@ def initialize_workflow(job_path: Path, state_path: Path) -> dict[str, Any]:
             "artifacts": [artifact(job_path, "tool")],
             "evaluation": {
                 "evaluator": "initialize_intake",
+                "evaluatorVersion": EVALUATOR_VERSIONS["initialize_intake"],
                 "evaluatorCodeSha256": sha256_file(Path(__file__)),
                 "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
                 "result": "PASS" if ready else "BLOCKED",
@@ -515,6 +550,7 @@ def command_migrate_state(args: argparse.Namespace) -> None:
                 "artifacts": list(intake.get("artifacts", [])),
                 "evaluation": {
                     "evaluator": "initialize_intake",
+                    "evaluatorVersion": EVALUATOR_VERSIONS["initialize_intake"],
                     "evaluatorCodeSha256": sha256_file(Path(__file__)),
                     "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
                     "result": intake["status"],
@@ -592,6 +628,18 @@ def reset_stage(state: dict[str, Any], stage_name: str, status: str, reason: str
             "identityDigest": None,
         }
     )
+    if stage_name == "regional-review":
+        # Conservative default: an unscoped invalidation reopens every
+        # recorded area. Area-scoped commands restore unaffected PASS
+        # records afterwards.
+        area_review = stage.get("areaReview")
+        if isinstance(area_review, dict):
+            for area_id, record in area_review.items():
+                area_review[area_id] = {
+                    **(record if isinstance(record, dict) else {}),
+                    "status": "PENDING",
+                    "invalidatedReason": reason,
+                }
 
 
 def invalidate_after(state: dict[str, Any], stage_name: str, reason: str) -> None:
@@ -664,7 +712,6 @@ def publish_scope(blocked: set[str]) -> tuple[str, list[str]]:
 
 
 def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
-    current_code_sha = sha256_file(Path(__file__))
     def artifacts_are_current(stage: dict[str, Any]) -> bool:
         for item in stage.get("artifacts", []):
             path_text = item.get("path") if isinstance(item, dict) else None
@@ -683,8 +730,8 @@ def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
             or not isinstance(state["stages"][name].get("evaluation"), dict)
             or state["stages"][name]["evaluation"].get("pipelineContractDigest")
             != PIPELINE_CONTRACT_DIGEST
-            or state["stages"][name]["evaluation"].get("evaluatorCodeSha256")
-            != current_code_sha
+            or state["stages"][name]["evaluation"].get("evaluatorVersion")
+            != EVALUATOR_VERSIONS[STAGE_SPECS[name]["evaluator"]]
             or not artifacts_are_current(state["stages"][name])
         )
     ]
@@ -909,6 +956,339 @@ def parse_stage_artifacts(
     ]
 
 
+# --- independent recomputation of machine-checkable artifact claims ---------
+#
+# Self-reported booleans stay authoritative only for checks that genuinely
+# need a human (viewerLoad, framing, ...). Every check listed in the contract
+# checkProvenance.recomputed set is recomputed here from the current scene and
+# declared inputs; a self-reported True that recomputation contradicts fails
+# the stage with SELF_REPORTED_CHECK_MISMATCH. Missing recompute inputs and
+# missing runtimes fail closed (CHECK_RECOMPUTE_INPUT_MISSING /
+# CHECK_RECOMPUTE_UNAVAILABLE) instead of falling back to trust.
+
+COMPILE_CHECK_WRAPPER_JS = """
+import { readFileSync } from 'node:fs';
+import { compileSceneV2 } from './scene-core-esm.mjs';
+
+const raw = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const compiled = compileSceneV2(raw);
+const acceptedSourceIds = new Set(
+  compiled.structures.map((entry) => entry.sourceId || entry.id),
+);
+const spaces = raw.review?.topology?.spaces || [];
+const topologyBreaks = [];
+for (const space of spaces) {
+  for (const nodeId of space.boundaryNodeIds || []) {
+    if (!acceptedSourceIds.has(nodeId)) {
+      topologyBreaks.push(`${space.id || 'space'}:${nodeId}`);
+    }
+  }
+}
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+const cross = (a, b) => a[0] * b[1] - a[1] * b[0];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1];
+const walls = Object.values(raw.nodes || {}).filter((node) => (
+  node && node.type === 'wall'
+  && (node.wallKind || 'solid') === 'solid'
+  && acceptedSourceIds.has(node.id)
+));
+const collisions = [];
+for (let i = 0; i < walls.length; i += 1) {
+  for (let j = i + 1; j < walls.length; j += 1) {
+    const a = walls[i];
+    const b = walls[j];
+    const dirA = sub(a.end, a.start);
+    const dirB = sub(b.end, b.start);
+    const lenA = Math.hypot(dirA[0], dirA[1]);
+    const lenB = Math.hypot(dirB[0], dirB[1]);
+    if (lenA < 1e-9 || lenB < 1e-9) continue;
+    // Shared junctions (corners, T-joints) are legal joinery. Collisions are
+    // interior X-crossings and near-collinear duplicate overlaps only.
+    const clearance = 0.5 * ((a.thickness || 0.12) + (b.thickness || 0.12)) + 0.01;
+    const denominator = cross(dirA, dirB);
+    const offset = sub(b.start, a.start);
+    if (Math.abs(denominator) > 1e-9) {
+      const tA = cross(offset, dirB) / denominator;
+      const tB = cross(offset, dirA) / denominator;
+      const interiorA = tA * lenA > clearance && (1 - tA) * lenA > clearance;
+      const interiorB = tB * lenB > clearance && (1 - tB) * lenB > clearance;
+      if (interiorA && interiorB) collisions.push(`${a.id}x${b.id}`);
+    } else {
+      const unitA = [dirA[0] / lenA, dirA[1] / lenA];
+      const lateral = Math.abs(cross(unitA, offset));
+      if (lateral < clearance) {
+        const u0 = dot(offset, unitA);
+        const u1 = dot(sub(b.end, a.start), unitA);
+        const overlap = Math.min(lenA, Math.max(u0, u1)) - Math.max(0, Math.min(u0, u1));
+        if (overlap > 0.05) collisions.push(`${a.id}~${b.id}`);
+      }
+    }
+  }
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  spaceCount: spaces.length,
+  acceptedStructureSourceCount: acceptedSourceIds.size,
+  topologyBreaks,
+  collisions,
+}));
+"""
+
+
+def _payload_recompute_inputs(payload: dict[str, Any]) -> dict[str, Any]:
+    value = payload.get("recompute")
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_recompute_path(item: dict[str, str], value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(item["path"]).parent / path
+    return path.resolve()
+
+
+def _load_scene_for_recompute(context: dict[str, Any]) -> dict[str, Any]:
+    scene_item = context.get("scene")
+    if not isinstance(scene_item, dict):
+        raise WorkflowError(
+            "check recomputation requires the bound scene authority",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    scene = load_json(Path(scene_item["path"]))
+    if (
+        not isinstance(scene, dict)
+        or not isinstance(scene.get("nodes"), dict)
+        or not isinstance(scene.get("evidence"), dict)
+    ):
+        raise WorkflowError(
+            "scene authority lacks the V2 nodes/evidence maps required for recomputation",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    return scene
+
+
+def recompute_authority_unmodified(
+    context: dict[str, Any], item: dict[str, str], payload: dict[str, Any],
+) -> bool:
+    recorded = payload.get("sceneSha256")
+    if not isinstance(recorded, str) or not re.fullmatch(r"[0-9a-f]{64}", recorded):
+        raise WorkflowError(
+            "presentation review receipt payload must record the reviewed sceneSha256",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    return recorded == context["state"].get("currentSceneSha256")
+
+
+def recompute_omission_disposed(
+    context: dict[str, Any], item: dict[str, str], payload: dict[str, Any],
+) -> bool:
+    scene = _load_scene_for_recompute(context)
+    proposals_value = _payload_recompute_inputs(payload).get("proposalsPath")
+    if not isinstance(proposals_value, str) or not proposals_value:
+        raise WorkflowError(
+            f"{item['artifactType']} payload.recompute.proposalsPath is required to recompute omission disposal",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    proposals_path = _resolve_recompute_path(item, proposals_value)
+    if not proposals_path.is_file():
+        raise WorkflowError(
+            f"omission recompute proposals file is missing: {proposals_path}",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    dispositions: dict[str, str] = {}
+    for candidate in payload.get("candidates") or []:
+        if isinstance(candidate, dict) and candidate.get("id") is not None:
+            dispositions[str(candidate["id"])] = str(candidate.get("disposition") or "")
+    raw_dispositions = payload.get("dispositions")
+    if isinstance(raw_dispositions, dict):
+        for key, value in raw_dispositions.items():
+            dispositions[str(key)] = str(value)
+    try:
+        import audit_structural_omissions as omission_api
+    except Exception as error:
+        raise WorkflowError(
+            f"omission recomputation is unavailable: {error}",
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        ) from error
+    undisposed = omission_api.undisposed_eligible_candidates(
+        load_json(proposals_path), scene, dispositions,
+    )
+    return not undisposed
+
+
+def recompute_support(
+    context: dict[str, Any], item: dict[str, str], payload: dict[str, Any],
+) -> bool:
+    scene = _load_scene_for_recompute(context)
+    nodes, evidence = scene["nodes"], scene["evidence"]
+    measured_walls = [
+        node_id
+        for node_id, entry in evidence.items()
+        if isinstance(entry, dict)
+        and entry.get("status") == "accepted-measured"
+        and isinstance(nodes.get(node_id), dict)
+        and nodes[node_id].get("type") == "wall"
+        and nodes[node_id].get("wallKind", "solid") != "elevated-band"
+    ]
+    if not measured_walls:
+        # Nothing measured to support; whether an all-inferred scene may
+        # publish is decided by the evidence gates, not this check.
+        return True
+    index_value = _payload_recompute_inputs(payload).get("indexPath")
+    if not isinstance(index_value, str) or not index_value:
+        raise WorkflowError(
+            "global review payload.recompute.indexPath is required to recompute measured-wall support",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    index_path = _resolve_recompute_path(item, index_value)
+    if not index_path.exists():
+        raise WorkflowError(
+            f"support recompute capture index is missing: {index_path}",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    try:
+        import pointcloud_scene_metrics as metrics_api
+        from capture_index import CaptureIndex
+    except Exception as error:
+        raise WorkflowError(
+            f"support recomputation is unavailable: {error}",
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        ) from error
+    report = metrics_api.evaluate_scene(scene, CaptureIndex.open(index_path))
+    return report["status"] == "PASS"
+
+
+def _compiled_scene_checks(context: dict[str, Any]) -> dict[str, Any]:
+    cached = context.get("_compiledSceneChecks")
+    if isinstance(cached, dict):
+        return cached
+    scene_item = context.get("scene")
+    if not isinstance(scene_item, dict):
+        raise WorkflowError(
+            "topology/collision recomputation requires the bound scene authority",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    node_binary = shutil.which("node")
+    if not node_binary:
+        raise WorkflowError(
+            "node runtime is unavailable for topology/collision recomputation",
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        )
+    core_source = SCENE_CORE_ROOT / "scene-core.js"
+    if not core_source.is_file():
+        raise WorkflowError(
+            f"scene compiler is missing: {core_source}",
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        )
+    with tempfile.TemporaryDirectory(prefix="scene-compile-check-") as temp_root:
+        temp = Path(temp_root)
+        # Copy under an .mjs name so the ESM source parses on every Node
+        # version regardless of package.json module-type detection.
+        shutil.copyfile(core_source, temp / "scene-core-esm.mjs")
+        wrapper = temp / "compile-checks.mjs"
+        wrapper.write_text(COMPILE_CHECK_WRAPPER_JS, encoding="utf-8")
+        try:
+            completed = subprocess.run(
+                [node_binary, str(wrapper), str(Path(scene_item["path"]))],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise WorkflowError(
+                "topology/collision recomputation timed out",
+                "CHECK_RECOMPUTE_UNAVAILABLE",
+            ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise WorkflowError(
+            "topology/collision recomputation failed"
+            + (f": {detail}" if detail else ""),
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        )
+    try:
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as error:
+        raise WorkflowError(
+            "topology/collision recomputation produced no parsable result",
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        ) from error
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise WorkflowError(
+            "topology/collision recomputation produced an invalid result",
+            "CHECK_RECOMPUTE_UNAVAILABLE",
+        )
+    context["_compiledSceneChecks"] = result
+    return result
+
+
+def recompute_topology(
+    context: dict[str, Any], item: dict[str, str], payload: dict[str, Any],
+) -> bool:
+    return not _compiled_scene_checks(context).get("topologyBreaks")
+
+
+def recompute_collisions(
+    context: dict[str, Any], item: dict[str, str], payload: dict[str, Any],
+) -> bool:
+    return not _compiled_scene_checks(context).get("collisions")
+
+
+def _receipt_area_scores(payload: dict[str, Any]) -> tuple[list[tuple[str, int]], int] | None:
+    areas = payload.get("areas")
+    total = payload.get("score")
+    if (
+        not isinstance(areas, list)
+        or not areas
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or not 0 <= total <= 100
+    ):
+        return None
+    parsed: list[tuple[str, int]] = []
+    for area in areas:
+        if not isinstance(area, dict):
+            return None
+        area_id = area.get("id") or area.get("areaId")
+        score = area.get("score")
+        if (
+            not isinstance(area_id, str)
+            or not area_id.strip()
+            or not isinstance(score, int)
+            or isinstance(score, bool)
+            or not 0 <= score <= 100
+        ):
+            return None
+        parsed.append((area_id.strip(), score))
+    return parsed, total
+
+
+def recompute_score_gate(
+    context: dict[str, Any], item: dict[str, str], payload: dict[str, Any],
+) -> bool:
+    scores = _receipt_area_scores(payload)
+    if scores is None:
+        raise WorkflowError(
+            "global review receipt payload must record per-area scores and a total score",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    areas, total = scores
+    return all(score >= 85 for _, score in areas) and total >= 90
+
+
+CHECK_RECOMPUTERS = {
+    ("presentation-review-receipt", "authorityUnmodified"): recompute_authority_unmodified,
+    ("omission-audit", "allEligibleProposalsDisposed"): recompute_omission_disposed,
+    ("global-review-receipt", "omission"): recompute_omission_disposed,
+    ("global-review-receipt", "support"): recompute_support,
+    ("global-review-receipt", "topology"): recompute_topology,
+    ("global-review-receipt", "collisions"): recompute_collisions,
+    ("global-review-receipt", "scoreGate"): recompute_score_gate,
+}
+
+
 def evaluate_required_artifact_checks(context: dict[str, Any]) -> dict[str, list[str]]:
     passed: dict[str, list[str]] = {}
     for item in context["artifacts"]:
@@ -934,6 +1314,22 @@ def evaluate_required_artifact_checks(context: dict[str, Any]) -> dict[str, list
                 "STAGE_ARTIFACT_CHECK_FAILED",
                 [f"regenerate {artifact_type} after resolving every required check"],
             )
+        recomputed: dict[str, bool] = {}
+        for name in required_checks:
+            recomputer = CHECK_RECOMPUTERS.get((artifact_type, name))
+            if recomputer is None:
+                continue
+            value = bool(recomputer(context, item, payload))
+            recomputed[name] = value
+            if not value:
+                raise WorkflowError(
+                    f"typed artifact {artifact_type} self-reported check {name} "
+                    "contradicts independent recomputation",
+                    "SELF_REPORTED_CHECK_MISMATCH",
+                    [f"regenerate {artifact_type} after fixing {name} against the current scene"],
+                )
+        if recomputed:
+            context.setdefault("recomputedChecks", {})[artifact_type] = recomputed
         passed[artifact_type] = list(required_checks)
     return passed
 
@@ -968,26 +1364,83 @@ def evaluate_author(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def evaluate_presentation_review(context: dict[str, Any]) -> dict[str, Any]:
+    passed = evaluate_required_artifact_checks(context)
     return {
         "authorityBoundPresentation": True,
         "independentReview": True,
-        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+        "recomputedChecks": context.get("recomputedChecks", {}),
+        "passedArtifactChecks": passed,
     }
 
 
+def _artifact_payload(context: dict[str, Any], artifact_type: str) -> dict[str, Any]:
+    for item in context["artifacts"]:
+        if item.get("artifactType") == artifact_type:
+            value = load_json(Path(item["path"]))
+            payload = value.get("payload") if isinstance(value, dict) else None
+            return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _reviewed_area_entries(payload: dict[str, Any]) -> list[tuple[str, int | None]]:
+    entries: list[tuple[str, int | None]] = []
+    areas = payload.get("areas")
+    if not isinstance(areas, list):
+        return entries
+    for area in areas:
+        if not isinstance(area, dict):
+            continue
+        area_id = area.get("id") or area.get("areaId")
+        if not isinstance(area_id, str) or not area_id.strip():
+            continue
+        score = area.get("score")
+        entries.append((
+            area_id.strip(),
+            score if isinstance(score, int) and not isinstance(score, bool) else None,
+        ))
+    return entries
+
+
 def evaluate_regional_review(context: dict[str, Any]) -> dict[str, Any]:
+    passed = evaluate_required_artifact_checks(context)
+    entries = _reviewed_area_entries(
+        _artifact_payload(context, "regional-review-receipt")
+    )
+    if not entries:
+        raise WorkflowError(
+            "regional review receipt payload must list the reviewed areas",
+            "CHECK_RECOMPUTE_INPUT_MISSING",
+        )
+    area_review = context["state"]["stages"]["regional-review"].get("areaReview") or {}
+    pending = sorted(
+        area_id
+        for area_id, record in area_review.items()
+        if not (isinstance(record, dict) and record.get("status") == "PASS")
+    )
+    reviewed_ids = {area_id for area_id, _ in entries}
+    uncovered = [area_id for area_id in pending if area_id not in reviewed_ids]
+    if uncovered:
+        raise WorkflowError(
+            "regional review must cover every invalidated area: " + ", ".join(uncovered),
+            "REGIONAL_REVIEW_AREA_COVERAGE_INCOMPLETE",
+            [f"re-review area {area_id} against the current scene" for area_id in uncovered],
+        )
     return {
         "authorityBoundRegionalReview": True,
-        "omissionAuditPresent": True,
-        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+        "reviewedAreaIds": sorted(reviewed_ids),
+        "coveredPendingAreaIds": pending,
+        "recomputedChecks": context.get("recomputedChecks", {}),
+        "passedArtifactChecks": passed,
     }
 
 
 def evaluate_global_review(context: dict[str, Any]) -> dict[str, Any]:
+    passed = evaluate_required_artifact_checks(context)
     return {
         "authorityBoundGlobalReview": True,
         "independentReview": True,
-        "passedArtifactChecks": evaluate_required_artifact_checks(context),
+        "recomputedChecks": context.get("recomputedChecks", {}),
+        "passedArtifactChecks": passed,
     }
 
 
@@ -1172,6 +1625,9 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
         state["lastCheckpoint"] = checkpoint
     evaluation = {
         "evaluator": evaluator_name,
+        "evaluatorVersion": EVALUATOR_VERSIONS[evaluator_name],
+        # Whole-file sha stays recorded as provenance only; staleness is
+        # decided by evaluatorVersion.
         "evaluatorCodeSha256": sha256_file(Path(__file__)),
         "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
         "artifactSetDigest": artifact_set_digest,
@@ -1200,6 +1656,22 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
             "capabilityDegradations": capability_degradations,
         }
     )
+    if args.name == "regional-review":
+        merged = dict(current.get("areaReview") or {})
+        for area_id, score in _reviewed_area_entries(
+            _artifact_payload(
+                {"artifacts": artifacts}, "regional-review-receipt"
+            )
+        ):
+            record: dict[str, Any] = {
+                "status": "PASS",
+                "reviewedAt": now_iso(),
+                "sceneSha256": scene_sha,
+            }
+            if score is not None:
+                record["score"] = score
+            merged[area_id] = record
+        current["areaReview"] = merged
     event(
         state,
         args.actor,
@@ -1307,10 +1779,81 @@ def command_open_issue(args: argparse.Namespace) -> None:
     state["stages"]["author"].update(
         {"status": "REVIEW", "updatedAt": now_iso(), "actor": args.actor, "note": f"open issue {issue_id}"}
     )
+    prior_area_review = {
+        area_id: dict(record) if isinstance(record, dict) else record
+        for area_id, record in (
+            state["stages"]["regional-review"].get("areaReview") or {}
+        ).items()
+    }
     invalidate_after(state, "author", f"opened {issue_id}")
+    # An issue names its area; scope the regional invalidation to it, but only
+    # when the area is a recorded regional areaId - anything else (for example
+    # "global") keeps the conservative full invalidation.
+    apply_area_scoped_invalidation(
+        state,
+        prior_area_review,
+        [args.area] if args.area in prior_area_review else None,
+        f"opened {issue_id}",
+    )
     event(state, args.actor, "open-issue", {"id": issue_id, "severity": args.severity, "area": args.area})
     save_state(args.state, state)
     print(issue_id)
+
+
+def parse_affected_areas(value: object) -> list[str] | None:
+    """None means every area is affected (conservative full invalidation)."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "all":
+        return None
+    areas: list[str] = []
+    for part in text.split(","):
+        part = part.strip()
+        if part and part not in areas:
+            areas.append(part)
+    return areas or None
+
+
+def apply_area_scoped_invalidation(
+    state: dict[str, Any],
+    prior_area_review: dict[str, Any],
+    affected: list[str] | None,
+    reason: str,
+) -> None:
+    """Reopen only the affected regional areas after a full stage reset.
+
+    With an explicit affected list the untouched PASS records are restored
+    (reset_stage flips everything) so the next regional review only has to
+    cover the invalidated areas. Without a list every recorded area is
+    reopened explicitly - the stage may already be PENDING, in which case
+    reset_stage never ran.
+    """
+    stage = state["stages"]["regional-review"]
+    area_review = stage.get("areaReview")
+    if not isinstance(area_review, dict):
+        area_review = {}
+        stage["areaReview"] = area_review
+    if affected is None:
+        for area_id, record in area_review.items():
+            area_review[area_id] = {
+                **(record if isinstance(record, dict) else {}),
+                "status": "PENDING",
+                "invalidatedReason": reason,
+            }
+        return
+    for area_id, record in prior_area_review.items():
+        if area_id in affected:
+            continue
+        if isinstance(record, dict) and record.get("status") == "PASS":
+            area_review[area_id] = record
+    for area_id in affected:
+        previous = area_review.get(area_id)
+        area_review[area_id] = {
+            **(previous if isinstance(previous, dict) else {}),
+            "status": "PENDING",
+            "invalidatedReason": reason,
+        }
 
 
 def command_patch(args: argparse.Namespace) -> None:
@@ -1361,11 +1904,42 @@ def command_patch(args: argparse.Namespace) -> None:
     state["currentScenePath"] = str(args.scene.resolve())
     state["lastCheckpoint"] = issue["patch"]["checkpoint"]
     invalidate_resolved_issues(state, scene["sha256"], issue["id"])
+    # A patch is the checkpointed continuation of the seeded authority, so the
+    # seed stage follows the new bytes; forcing a re-seed instead would reset
+    # every review stage and wipe the area-scoped regional ledger.
+    seed_stage = state["stages"]["seed"]
+    if seed_stage.get("status") == "PASS":
+        for item in seed_stage.get("artifacts", []):
+            if (
+                isinstance(item, dict)
+                and item.get("artifactType") == "scene-authority"
+                and Path(str(item.get("path", ""))).resolve() == args.scene.resolve()
+            ):
+                item["sha256"] = scene["sha256"]
     state["stages"]["author"].update(
         {"status": "REVIEW", "updatedAt": now_iso(), "actor": args.actor, "note": f"patched {issue['id']}"}
     )
+    affected_areas = parse_affected_areas(getattr(args, "affected_areas", None))
+    prior_area_review = {
+        area_id: dict(record) if isinstance(record, dict) else record
+        for area_id, record in (
+            state["stages"]["regional-review"].get("areaReview") or {}
+        ).items()
+    }
     invalidate_after(state, "author", f"scene changed for {issue['id']}")
-    event(state, args.actor, "patch", {"id": issue["id"], "sceneSha256": scene["sha256"]})
+    apply_area_scoped_invalidation(
+        state, prior_area_review, affected_areas, f"patched {issue['id']}",
+    )
+    event(
+        state,
+        args.actor,
+        "patch",
+        {
+            "id": issue["id"],
+            "sceneSha256": scene["sha256"],
+            "affectedAreas": affected_areas if affected_areas is not None else "all",
+        },
+    )
     save_state(args.state, state)
 
 
@@ -1749,6 +2323,7 @@ def command_publish(args: argparse.Namespace) -> None:
             "sceneSha256": scene["sha256"],
             "evaluation": {
                 "evaluator": STAGE_SPECS["publish"]["evaluator"],
+                "evaluatorVersion": EVALUATOR_VERSIONS[STAGE_SPECS["publish"]["evaluator"]],
                 "evaluatorCodeSha256": sha256_file(Path(__file__)),
                 "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
                 "result": "PASS",
@@ -1907,6 +2482,11 @@ def build_parser() -> argparse.ArgumentParser:
     patch.add_argument("--checkpoint-dir", type=Path)
     patch.add_argument("--note", required=True)
     patch.add_argument("--strategy-change")
+    patch.add_argument(
+        "--affected-areas",
+        dest="affected_areas",
+        help="comma-separated regional areaIds this patch touches; omit or 'all' reopens every area",
+    )
 
     review = subparsers.add_parser("review")
     review.add_argument("--state", required=True, type=Path)
