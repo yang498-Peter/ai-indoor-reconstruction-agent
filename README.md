@@ -40,6 +40,13 @@ python .\.codex\skills\reconstruct-indoor-scene\scripts\discover_capture.py `
 `scene-core\capture_readiness.py validate-pose` 对 V2 CaptureIndex 做空间对齐，才能启用
 posed-photo association。
 
+`geometry_workflow.py prepare` 现在会同时写出 `structural-proposals.json` 和
+`candidate-topology.json`。前者把真实墙面 observation 与 wall hypothesis 分开；单面回波保留
+墙厚两侧的两个中心线备选。后者做连续片段、区域轴族、beam 全局选择、房间候选和邻接分析，
+但状态始终是 `PROPOSED_NOT_AUTHORITY`。通用流程默认使用 `profiles/default-office-v1.json`；
+clean-room 的重复玻璃分区启发式只在显式传入 `--topology-profile profiles\cleanroom-v1.json`
+时启用。`scanCoverageBoundary`、`floorSupportPolygon` 和 `inferredRoomBoundary` 不会自动生成墙。
+
 场景 authority 完成后，用二维墙面指标和反向结构遗漏审计做硬门：
 
 ```powershell

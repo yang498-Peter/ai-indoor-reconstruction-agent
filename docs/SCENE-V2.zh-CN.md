@@ -29,6 +29,24 @@ python scene-core\capture_readiness.py adapters
 python scene-core\capture_readiness.py validate-pose --manifest work\capture-manifest.json --index work\capture-index --output work\pose-validation.json
 ```
 
+## 候选连续性与全局拓扑契约
+
+- `structural-proposals` V2 将 `faceObservations` 与 `wallHypotheses` 分开；单面 observation
+  只证明墙面位置，必须保留 `± thickness/2` 两个中心线备选，未获第二面、拓扑或照片佐证前
+  只具备 inferred eligibility；
+- `candidate-topology.json` 以局部连续片段、区域独立轴族、数据项、复杂度、重复/接头和闭合项
+  做 bounded beam selection。Manhattan 只能是 profile 先验，不能是硬约束；
+- `selection.status` 固定为 `PROPOSED_NOT_AUTHORITY`，结果不会写入 Scene V2；没有闭合房间时
+  稳定返回 `REVIEW_REQUIRED / TOPOLOGY_NO_CLOSED_ROOM_CANDIDATE`；
+- floor/scan/inferred boundary 与 wall 是四类独立语义，任何 floor polygon 边都不能自动拉成
+  full-height wall；
+- 通用 office 与 clean-room profile 分离。clean-room profile 带
+  `explicitOptInRequired=true`，不得作为默认策略泛化到普通室内 capture。
+
+契约位于 `schemas/candidate-topology-v1.schema.json` 与
+`schemas/candidate-topology-profile-v1.schema.json`；实现与 CLI 位于
+`scene-core/candidate_topology.py`。
+
 ## 文件
 
 | 文件 | 职责 |
@@ -38,6 +56,7 @@ python scene-core\capture_readiness.py validate-pose --manifest work\capture-man
 | `scene-core/mcp_server.py` | MCP stdio server：scene_api 的 23 个工具面，纯 stdlib |
 | `scene-core/scene-core.js` | 编译层：joinery（miter/T 嵌入）、门窗真开洞、视图模型 |
 | `scene-core/pointcloud_evidence.py` | 点云证据生成：正射/高程带切片/任意断面，含像素↔米映射 |
+| `scene-core/candidate_topology.py` | observation/hypothesis 分层、连续片段、区域轴和全局房间拓扑候选（只读） |
 | `scene-core/detect_trees.py` | CHM 树候选检测 + 树干回波核验（只出候选） |
 | `scene-core/render_scene_overlay.py` | 场景叠加正射的 QA 对比图 |
 | `scene-core/make_sample_scene.py` | 合成样例（无需客户数据即可看 Viewer 全链路） |

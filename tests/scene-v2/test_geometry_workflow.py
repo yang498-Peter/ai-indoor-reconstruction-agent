@@ -68,14 +68,28 @@ class GeometryWorkflowTest(unittest.TestCase):
         self.assertEqual(sha256(self.las), self.source_hash)
         self.assertEqual(prepared["status"], "READY_FOR_AGENT_REVIEW")
         self.assertEqual(prepared["gates"]["structuralProposals"], "CANDIDATES_ONLY")
+        self.assertIn(
+            prepared["gates"]["candidateTopology"],
+            {"CANDIDATE_SELECTION_PROPOSED", "REVIEW_REQUIRED"},
+        )
         self.assertEqual(prepared["gates"]["publication"], "BLOCKED")
         self.assertTrue((self.workspace / "capture-index" / "capture-index.json").is_file())
         self.assertTrue((self.workspace / "evidence" / "evidence-manifest.json").is_file())
         self.assertTrue((self.workspace / "structural-proposals.json").is_file())
+        self.assertTrue((self.workspace / "candidate-topology.json").is_file())
 
         proposals = json.loads((self.workspace / "structural-proposals.json").read_text(encoding="utf-8"))
+        self.assertEqual(proposals["schemaVersion"], 2)
         self.assertTrue(all(item["status"] == "candidate" for item in proposals["wallCandidates"]))
+        self.assertTrue(all(item["status"] == "candidate" for item in proposals["wallHypotheses"]))
+        for hypothesis in proposals["wallHypotheses"]:
+            expected = 2 if hypothesis["wallMode"] == "single-face" else 1
+            self.assertEqual(len(hypothesis["centerlineAlternatives"]), expected)
         self.assertTrue(os.path.samefile(proposals["index"], self.workspace / "capture-index"))
+        candidate_topology = json.loads((self.workspace / "candidate-topology.json").read_text(encoding="utf-8"))
+        self.assertEqual(candidate_topology["authorityRule"], "proposal-only-agent-review-required")
+        self.assertEqual(candidate_topology["profile"]["id"], "default-office-v1")
+        self.assertEqual(candidate_topology["inputHashes"]["proposalsSha256"], sha256(self.workspace / "structural-proposals.json"))
 
         scene = support.scene_api.new_scene("workflow-room", 2.8, 0.0, "reviewer-a")
         level = support.scene_api.default_level_id(scene)

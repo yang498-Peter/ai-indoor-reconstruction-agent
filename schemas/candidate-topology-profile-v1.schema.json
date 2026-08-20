@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/schemas/candidate-topology-profile-v1.schema.json",
+  "title": "Candidate topology optimization profile V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "description",
+    "explicitOptInRequired",
+    "manhattanHardConstraint",
+    "thresholds",
+    "weights"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"type": "string", "minLength": 3},
+    "description": {"type": "string", "minLength": 1},
+    "explicitOptInRequired": {"type": "boolean"},
+    "manhattanHardConstraint": {"const": false},
+    "heuristics": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "continuityAngleDeg",
+        "continuityOffsetM",
+        "continuityGapM",
+        "zoneRadiusM",
+        "axisToleranceDeg",
+        "duplicateOffsetM",
+        "duplicateOverlapRatio",
+        "topologySnapM",
+        "minRoomAreaM2",
+        "beamWidth"
+      ],
+      "properties": {
+        "continuityAngleDeg": {"type": "number", "minimum": 0},
+        "continuityOffsetM": {"type": "number", "minimum": 0},
+        "continuityGapM": {"type": "number", "minimum": 0},
+        "zoneRadiusM": {"type": "number", "exclusiveMinimum": 0},
+        "axisToleranceDeg": {"type": "number", "minimum": 0},
+        "duplicateOffsetM": {"type": "number", "minimum": 0},
+        "duplicateOverlapRatio": {"type": "number", "minimum": 0, "maximum": 1},
+        "topologySnapM": {"type": "number", "minimum": 0},
+        "minRoomAreaM2": {"type": "number", "minimum": 0},
+        "beamWidth": {"type": "integer", "minimum": 2, "maximum": 4096}
+      }
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataSupport",
+        "dataLength",
+        "residual",
+        "complexity",
+        "axisAlignment",
+        "junction",
+        "closure",
+        "duplicate",
+        "unexplained"
+      ],
+      "properties": {
+        "dataSupport": {"type": "number", "minimum": 0},
+        "dataLength": {"type": "number", "minimum": 0},
+        "residual": {"type": "number", "minimum": 0},
+        "complexity": {"type": "number", "minimum": 0},
+        "axisAlignment": {"type": "number", "minimum": 0},
+        "junction": {"type": "number", "minimum": 0},
+        "closure": {"type": "number", "minimum": 0},
+        "duplicate": {"type": "number", "minimum": 0},
+        "unexplained": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

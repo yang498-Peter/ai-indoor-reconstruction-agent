@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "default-office-v1",
+  "description": "General indoor office candidate topology profile; benchmark calibration required.",
+  "explicitOptInRequired": false,
+  "manhattanHardConstraint": false,
+  "thresholds": {
+    "continuityAngleDeg": 3.0,
+    "continuityOffsetM": 0.08,
+    "continuityGapM": 0.20,
+    "zoneRadiusM": 12.0,
+    "axisToleranceDeg": 6.0,
+    "duplicateOffsetM": 0.06,
+    "duplicateOverlapRatio": 0.70,
+    "topologySnapM": 0.18,
+    "minRoomAreaM2": 1.0,
+    "beamWidth": 4
+  },
+  "weights": {
+    "dataSupport": 1.0,
+    "dataLength": 0.20,
+    "residual": 1.0,
+    "complexity": 1.20,
+    "axisAlignment": 0.20,
+    "junction": 0.12,
+    "closure": 2.0,
+    "duplicate": 5.0,
+    "unexplained": 0.80
+  }
+}

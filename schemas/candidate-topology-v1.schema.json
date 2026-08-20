@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.cloudstudio/schemas/candidate-topology-v1.schema.json",
+  "title": "Candidate continuity and global topology optimization artifact V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "status",
+    "blockingCodes",
+    "authorityRule",
+    "profile",
+    "inputHashes",
+    "configDigest",
+    "producer",
+    "observationHypothesisContract",
+    "observations",
+    "observationsById",
+    "continuitySegments",
+    "wallHypotheses",
+    "zones",
+    "selection",
+    "topology",
+    "boundarySemantics",
+    "boundaryPromotionRule",
+    "lineage"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "kind": {"const": "candidate-topology-optimization"},
+    "status": {"enum": ["CANDIDATE_SELECTION_PROPOSED", "REVIEW_REQUIRED"]},
+    "blockingCodes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "authorityRule": {"const": "proposal-only-agent-review-required"},
+    "profile": {
+      "type": "object",
+      "required": ["id", "explicitOptInRequired", "manhattanHardConstraint"],
+      "properties": {
+        "id": {"type": "string"},
+        "artifactSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "explicitOptInRequired": {"type": "boolean"},
+        "manhattanHardConstraint": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "inputHashes": {
+      "type": "object",
+      "required": ["proposalsSha256"],
+      "properties": {
+        "proposalsSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "indexManifestSha256": {"type": ["string", "null"]},
+        "indexFingerprint": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "configDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "producer": {
+      "type": "object",
+      "required": ["name", "codeSha256"],
+      "properties": {
+        "name": {"const": "candidate-topology-v1"},
+        "codeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "observationHypothesisContract": {"type": "object"},
+    "observations": {"type": "array", "items": {"type": "object"}},
+    "observationsById": {"type": "object", "additionalProperties": {"type": "object"}},
+    "continuitySegments": {"type": "array", "items": {"type": "object"}},
+    "wallHypotheses": {"type": "array", "items": {"type": "object"}},
+    "zones": {"type": "array", "items": {"type": "object"}},
+    "selection": {
+      "type": "object",
+      "required": [
+        "status",
+        "selectedHypothesisIds",
+        "selectedAlternativeIds",
+        "selectedSourceCandidateIds",
+        "rejectedSourceCandidateIds",
+        "objective"
+      ]
+    },
+    "topology": {
+      "type": "object",
+      "required": ["rooms", "roomCount", "adjacencies", "adjacencyCount", "lineComponentCount"]
+    },
+    "boundarySemantics": {
+      "type": "object",
+      "propertyNames": {"enum": ["scanCoverageBoundary", "floorSupportPolygon", "inferredRoomBoundary"]},
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 3,
+        "items": {
+          "type": "array",
+          "prefixItems": [{"type": "number"}, {"type": "number"}],
+          "items": false
+        }
+      }
+    },
+    "boundaryPromotionRule": {"type": "string"},
+    "lineage": {"type": "object"},
+    "input": {"type": "object"}
+  }
+}

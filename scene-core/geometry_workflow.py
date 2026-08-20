@@ -19,6 +19,7 @@ import tempfile
 from typing import Any
 
 from capture_index import CaptureIndex, CaptureIndexError, build_index
+from candidate_topology import load_profile, optimize_topology
 from capture_readiness import canonical_hash, validate_pose_alignment
 from indexed_pointcloud_evidence import render_overview
 from pointcloud_scene_metrics import evaluate_scene
@@ -74,10 +75,12 @@ def prepare_workspace(
     overview_every: int = 1,
     proposal_cell_m: float = 0.05,
     proposal_max_points: int = 2_000_000,
+    topology_profile: Path | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
     output = output.resolve()
     capture_manifest = capture_manifest.resolve() if capture_manifest else None
+    topology_profile = topology_profile.resolve() if topology_profile else None
     if output.exists():
         raise CaptureIndexError("geometry workspace already exists; choose a fresh derivative directory")
     if not source.is_file():
@@ -137,7 +140,16 @@ def prepare_workspace(
             "captureIndexFingerprint": index_manifest["indexFingerprint"],
             "rootContentSha256s": [index_manifest["sourceIdentity"]["contentSha256"]],
         }
-        _atomic_json(temporary / "structural-proposals.json", proposals)
+        proposals_path = temporary / "structural-proposals.json"
+        _atomic_json(proposals_path, proposals)
+
+        profile = load_profile(topology_profile)
+        topology = optimize_topology(
+            proposals,
+            profile=profile,
+            proposals_sha256=hashlib.sha256(proposals_path.read_bytes()).hexdigest(),
+        )
+        _atomic_json(temporary / "candidate-topology.json", topology)
 
         pose_report = _pose_gate(capture_manifest, index)
         _atomic_json(temporary / "pose-validation.json", pose_report)
@@ -159,11 +171,14 @@ def prepare_workspace(
                 "overviewDecimation": overview_every,
                 "proposalCellM": proposal_cell_m,
                 "proposalMaxPoints": proposal_max_points,
+                "topologyProfileId": profile["id"],
+                "topologyProfileSha256": profile["artifactSha256"],
             },
             "artifacts": {
                 "captureIndex": "capture-index/capture-index.json",
                 "overviewEvidence": "evidence/evidence-manifest.json",
                 "structuralProposals": "structural-proposals.json",
+                "candidateTopology": "candidate-topology.json",
                 "poseValidation": "pose-validation.json",
                 "authorityScene": "NOT_CREATED",
                 "pointcloudSceneMetrics": "NOT_RUN",
@@ -173,6 +188,7 @@ def prepare_workspace(
                 "captureIndex": "PASS",
                 "globalEvidence": "PASS",
                 "structuralProposals": "CANDIDATES_ONLY",
+                "candidateTopology": topology["status"],
                 "photoPoseValidation": pose_status,
                 "authorityTransaction": "NOT_RUN",
                 "pointcloudSceneMetrics": "NOT_RUN",
@@ -198,8 +214,8 @@ def prepare_workspace(
                 "optionalDepthRole": "residual evidence only; never silently replaces measured geometry",
             },
             "nextAction": (
-                "Review rawCenterline and suggestedCenterline candidates, record explicit accept/reject "
-                "transactions in scene-authority.json, then run evaluate."
+                "Review observation-backed centreline alternatives and the proposed global topology; "
+                "record explicit accept/reject transactions in scene-authority.json, then run evaluate."
             ),
         }
         _atomic_json(temporary / "geometry-workflow.json", workflow)
@@ -259,6 +275,7 @@ def main() -> int:
     prepare.add_argument("--overview-every", type=int, default=1)
     prepare.add_argument("--proposal-cell", type=float, default=0.05)
     prepare.add_argument("--proposal-max-points", type=int, default=2_000_000)
+    prepare.add_argument("--topology-profile", type=Path)
 
     evaluate = sub.add_parser("evaluate")
     evaluate.add_argument("--scene", required=True, type=Path)
@@ -285,6 +302,7 @@ def main() -> int:
             overview_every=args.overview_every,
             proposal_cell_m=args.proposal_cell,
             proposal_max_points=args.proposal_max_points,
+            topology_profile=args.topology_profile,
         )
         print(json.dumps({"ok": True, "workspace": str(args.output.resolve()), "result": result}, ensure_ascii=False))
         return 0
