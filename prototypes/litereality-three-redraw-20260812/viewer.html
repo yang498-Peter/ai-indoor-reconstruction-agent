@@ -5,6 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI 室内模型重建</title>
   <link rel="stylesheet" href="./viewer.css">
+  <style>
+    /* P2-2 photo-align + P2-5 review-mode styles live here so viewer.css
+       (shared with other worktrees) stays untouched. */
+    .review-panel[hidden], .review-preview[hidden], .photo-align-hud[hidden] { display: none; }
+    .review-panel { position: absolute; top: 12px; right: 12px; bottom: 12px; width: 324px; display: flex; flex-direction: column; border: 1px solid var(--line, #223); border-radius: 12px; background: rgba(10, 14, 17, 0.94); overflow: hidden; z-index: 30; }
+    .review-panel header { padding: 10px 12px; border-bottom: 1px solid var(--line, #223); }
+    .review-panel .review-stats { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px; margin-top: 6px; }
+    .review-panel .review-stats span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted, #9ab); }
+    .review-panel .review-stats i { width: 8px; height: 8px; border-radius: 3px; display: inline-block; }
+    .review-panel .review-filters { display: flex; gap: 5px; margin-top: 8px; }
+    .review-panel .review-filters button { padding: 4px 8px; font-size: 10px; border: 1px solid var(--line, #223); border-radius: 6px; background: transparent; color: var(--muted, #9ab); cursor: pointer; }
+    .review-panel .review-filters button.active { color: #d9ffef; border-color: rgba(35,196,131,.55); background: rgba(35,196,131,.12); }
+    .review-panel .review-body { overflow-y: auto; padding: 8px 10px 14px; flex: 1; }
+    .review-panel .review-group-title { margin: 10px 2px 5px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted, #9ab); }
+    .review-row { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; margin-bottom: 3px; border: 1px solid transparent; border-radius: 8px; background: #141a1e; text-align: left; cursor: pointer; color: inherit; }
+    .review-row:hover, .review-row.active { border-color: rgba(35,196,131,.48); background: rgba(35,196,131,.08); }
+    .review-row i { width: 8px; height: 8px; border-radius: 3px; background: var(--status-color, #888); }
+    .review-row b { display: block; font-size: 10.5px; font-weight: 640; }
+    .review-row small { display: block; color: var(--muted, #9ab); font-size: 9px; }
+    .review-row .review-warn { color: #ffb071; font-size: 9px; }
+    .review-sources { margin: 2px 0 8px; padding: 7px 9px; border-left: 2px solid rgba(35,196,131,.4); background: #10161a; border-radius: 0 8px 8px 0; font-size: 9.5px; }
+    .review-sources p { margin: 0 0 4px; color: var(--muted, #9ab); letter-spacing: .05em; }
+    .review-sources button, .review-sources span.src { display: block; width: 100%; text-align: left; padding: 3px 0; border: 0; background: none; color: #bfe8d4; font-size: 9.5px; word-break: break-all; }
+    .review-sources button { cursor: pointer; text-decoration: underline; text-decoration-color: rgba(35,196,131,.5); }
+    .review-preview { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(4, 6, 8, 0.86); cursor: zoom-out; }
+    .review-preview img { max-width: 92vw; max-height: 88vh; border-radius: 10px; box-shadow: 0 18px 60px rgba(0,0,0,.6); }
+    .review-preview figcaption { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center; font-size: 11px; color: #cfe; }
+    .photo-align-hud { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 12px; padding: 9px 14px; border: 1px solid var(--line, #223); border-radius: 12px; background: rgba(10, 14, 17, 0.92); }
+    .photo-align-hud label { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted, #9ab); }
+    .photo-align-hud input[type="range"] { width: 150px; accent-color: #23c483; }
+    .photo-align-hud b { font-size: 11px; color: #d9ffef; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .photo-align-hud button { padding: 6px 10px; border: 1px solid var(--line, #223); border-radius: 7px; background: #151b1f; color: inherit; cursor: pointer; }
+    #photo-align-enter { margin-top: 7px; width: 100%; padding: 6px 10px; border: 1px solid rgba(35,196,131,.4); border-radius: 7px; background: rgba(35,196,131,.1); color: #d9ffef; cursor: pointer; font-size: 11px; }
+    #review-mode-toggle.active { color: #07140f; background: var(--green, #23c483); font-weight: 750; }
+  </style>
   <script type="importmap">
     {
       "imports": {
@@ -30,6 +65,7 @@
         <a href="./review.html" data-i18n="evidenceReview">Agent 对比图</a>
         <button type="button" id="fit-view" data-i18n="fitView">适配视图</button>
         <button type="button" id="top-view" data-i18n="topView">俯视检查</button>
+        <button type="button" id="review-mode-toggle" data-i18n="reviewMode">审查模式</button>
         <div class="projection-switch" role="group" aria-label="投影方式" data-i18n-aria="projectionMode">
           <button type="button" data-projection="perspective" class="active" data-i18n="perspectiveProjection">透视</button>
           <button type="button" data-projection="orthographic" data-i18n="orthographicProjection">平行</button>
@@ -80,6 +116,14 @@
           <span><kbd>T / Home</kbd><b data-i18n="navViews">俯视 / 适配</b></span>
         </div>
         <div class="confidence-note" data-i18n="confidenceDefault">实体结构已通过四门；橙色半透明虚线是待复核推断，叠加检查可见、正式模型自动隐藏。自动墙线不会直接进入模型。</div>
+        <aside id="review-panel" class="review-panel" hidden></aside>
+        <div id="photo-align-hud" class="photo-align-hud" hidden>
+          <b id="photo-align-label"></b>
+          <label><span data-i18n="photoOpacity">照片透明度</span>
+            <input type="range" id="photo-opacity" min="0" max="1" step="0.05" value="0.65">
+          </label>
+          <button type="button" id="photo-align-exit" data-i18n="photoAlignExit">退出照片视角 (Esc)</button>
+        </div>
       </section>
 
       <aside class="right-panel">
@@ -103,11 +147,14 @@
           </div>
           <img id="evidence-photo" alt="最近相机证据帧" data-i18n-alt="evidencePhotoAlt">
           <p id="evidence-caption" data-i18n="evidenceCaptionDefault">自动选择覆盖范围互补的本地帧，不上传。</p>
+          <button type="button" id="photo-align-enter" data-i18n="photoAlignEnter" hidden>进入照片对齐视角</button>
+          <button type="button" id="frustum-toggle" data-i18n="photoFrustumsAll" hidden>显示全部帧标记</button>
           <div id="photo-strip" class="photo-strip"></div>
         </section>
       </aside>
     </section>
   </main>
-  <script type="module" src="./viewer.js?fresh=20260817-cleanroom-live-v3"></script>
+  <div id="review-preview" class="review-preview" hidden></div>
+  <script type="module" src="./viewer.js?fresh=20260820-photoalign-review-v1"></script>
 </body>
 </html>

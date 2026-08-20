@@ -64,7 +64,8 @@ const candidateStructureGroup = new THREE.Group();
 const objectGroup = new THREE.Group();
 const reviewObjectGroup = new THREE.Group();
 const cameraGroup = new THREE.Group();
-scene3d.add(pointGroup, wallGroup, candidateStructureGroup, objectGroup, reviewObjectGroup, cameraGroup);
+const photoMarkerGroup = new THREE.Group();
+scene3d.add(pointGroup, wallGroup, candidateStructureGroup, objectGroup, reviewObjectGroup, cameraGroup, photoMarkerGroup);
 
 let sceneData;
 let pointMaterial;
@@ -78,6 +79,25 @@ let currentLanguage = localStorage.getItem('ai-indoor-language') === 'en' ? 'en'
 let selectedPhotoIndex = 0;
 const activeNavigationKeys = new Set();
 const navigationClock = new THREE.Clock();
+// P2-2 photo/panorama alignment view + P2-5 unified review panel state.
+// rawSceneV2 keeps the authority graph (statuses, evidence sources) that the
+// compiled view model intentionally flattens; null for V1 scenes.
+let rawSceneV2 = null;
+let sceneBaseUrl = new URL(window.location.href);
+let photoAlign = null;
+let photoMarkersShowAll = false;
+const PHOTO_MARKER_BUDGET = 50;
+const PHOTO_BILLBOARD_DISTANCE_M = 4;
+let reviewPanelOpen = false;
+let reviewFilter = 'all';
+let reviewExpandedId = null;
+let reviewHighlightedMeshes = [];
+const REVIEW_STATUS_COLORS = {
+  'accepted-measured': '#23c483',
+  'accepted-inferred': '#4c8dff',
+  candidate: '#ff9a55',
+  rejected: '#ff5f56',
+};
 
 const translations = {
   'zh-CN': {
@@ -99,6 +119,9 @@ const translations = {
     evidenceFrame: '证据帧', originalFrame: '原始帧', localPreview: '本地预览', measuredSize: '测量尺寸', localConfidence: '本地置信度', supportPoints: '支持点数',
     heightEvidence: '桌面高度依据', ruleEvidence: '规则依据', occlusionCompletion: '遮挡补全', materialEvidence: '照片材质判断', status: '状态', noCompletion: '未使用推断补全', unconfirmed: '未确认',
     statusPASS: '通过', statusREVIEW: '待复核', statusFAIL: '未通过', statusADVISORY: '建议项', loadCloudFailed: '点云读取失败', cloudContractFailed: '点云二进制契约不匹配', sceneLoadFailed: 'scene.json 读取失败，请先运行 run-demo.ps1',
+    photoAlignEnter: '进入照片对齐视角', photoAlignExit: '退出照片视角 (Esc)', photoOpacity: '照片透明度', photoFrustumsAll: '显示全部帧标记', photoFrustumsSampled: '仅显示抽样帧标记', legendPhotoFrame: '照片帧标记',
+    reviewMode: '审查模式', reviewAll: '全部', reviewOnlyCandidate: '仅候选', reviewOnlyWarning: '仅告警', reviewEvidenceSources: '证据来源', reviewNoSources: '无证据来源记录', reviewEmpty: '没有匹配的元素', reviewWarning: '告警',
+    stMeasured: '实测接受', stInferred: '推断接受', stCandidate: '候选', stRejected: '已拒绝',
   },
   en: {
     title: 'AI Indoor Model Reconstruction', displayMode: 'Display mode', language: 'Language',
@@ -119,6 +142,9 @@ const translations = {
     evidenceFrame: 'Evidence Frame', originalFrame: 'Source frame', localPreview: 'Local preview', measuredSize: 'Measured Size', localConfidence: 'Local Confidence', supportPoints: 'Supporting Points',
     heightEvidence: 'Height Evidence', ruleEvidence: 'Decision Evidence', occlusionCompletion: 'Occlusion Completion', materialEvidence: 'Photo Material', status: 'Status', noCompletion: 'No inferred completion', unconfirmed: 'Unconfirmed',
     statusPASS: 'Verified', statusREVIEW: 'Review', statusFAIL: 'Failed', statusADVISORY: 'Advisory', loadCloudFailed: 'Failed to load the point cloud', cloudContractFailed: 'Point-cloud binary contract mismatch', sceneLoadFailed: 'Failed to load scene.json. Run run-demo.ps1 first',
+    photoAlignEnter: 'Enter photo-aligned view', photoAlignExit: 'Exit photo view (Esc)', photoOpacity: 'Photo opacity', photoFrustumsAll: 'Show all frame markers', photoFrustumsSampled: 'Show sampled frame markers', legendPhotoFrame: 'Photo Frames',
+    reviewMode: 'Review', reviewAll: 'All', reviewOnlyCandidate: 'Candidates only', reviewOnlyWarning: 'Warnings only', reviewEvidenceSources: 'Evidence sources', reviewNoSources: 'No evidence sources recorded', reviewEmpty: 'No matching elements', reviewWarning: 'warning',
+    stMeasured: 'Accepted (measured)', stInferred: 'Accepted (inferred)', stCandidate: 'Candidate', stRejected: 'Rejected',
   },
 };
 
@@ -147,6 +173,7 @@ function applyLanguage(language, persist = true) {
   if (persist) localStorage.setItem('ai-indoor-language', currentLanguage);
   if (sceneData) {
     renderPanels(sceneData);
+    if (reviewPanelOpen) renderReviewPanel();
     if (selectedGroup) selectObject(selectedGroup.userData.sceneObject.id, false);
     else {
       document.querySelector('#selection-title').textContent = t('selectElement');
@@ -990,32 +1017,584 @@ function renderObjectList() {
   `).join('');
 }
 
+// Photo URLs resolve against the scene JSON location, exactly like the LRPC
+// point-cloud artifact, so a scene directory stays portable as one unit.
+function resolveSceneAsset(path) {
+  if (!path) return path;
+  try { return new URL(path, sceneBaseUrl).toString(); } catch { return path; }
+}
+
 function renderPhotos(photos) {
   const strip = document.querySelector('#photo-strip');
   strip.innerHTML = photos.map((photo, index) => `
-    <button type="button" data-photo-index="${index}" class="${index === selectedPhotoIndex ? 'active' : ''}"><img src="${photo.path}" alt="${t('evidenceFrame')} ${index + 1}"></button>
+    <button type="button" data-photo-index="${index}" class="${index === selectedPhotoIndex ? 'active' : ''}"><img src="${resolveSceneAsset(photo.path)}" alt="${t('evidenceFrame')} ${index + 1}"></button>
   `).join('');
   if (photos.length) showPhoto(Math.min(selectedPhotoIndex, photos.length - 1));
+  else document.querySelector('#photo-align-enter').hidden = true;
+  updateFrustumToggle();
 }
 
 function showPhoto(index) {
   const photo = sceneData.photos[index];
   if (!photo) return;
   selectedPhotoIndex = index;
-  document.querySelector('#evidence-photo').src = photo.path;
+  document.querySelector('#evidence-photo').src = resolveSceneAsset(photo.path);
   document.querySelector('#evidence-caption').textContent = `${photo.id} · ${t('originalFrame')} ${photo.sourceFile || photo.path || photo.id} · ${t('localPreview')}`;
   document.querySelectorAll('[data-photo-index]').forEach((button) => button.classList.toggle('active', Number(button.dataset.photoIndex) === index));
+  const alignButton = document.querySelector('#photo-align-enter');
+  alignButton.hidden = !Array.isArray(photo.transformMatrix);
+  alignButton.dataset.photoIndex = String(index);
 }
 
 function findClosestPreview(object) {
-  const cameraNumber = Number(object.evidence.nearestCameraId.replace(/\D/g, '')) - 1;
+  const cameraNumber = Number(object.evidence?.nearestCameraId?.replace(/\D/g, '') ?? NaN) - 1;
   let best = 0;
   let bestDistance = Infinity;
   sceneData.photos.forEach((photo, index) => {
     const distance = Math.abs(photo.frameIndex - cameraNumber);
-    if (distance < bestDistance) { best = index; bestDistance = distance; }
+    if (Number.isFinite(distance) && distance < bestDistance) { best = index; bestDistance = distance; }
   });
   return best;
+}
+
+// --- P2-2: photo / panorama alignment view -------------------------------
+// meta.photos entries may carry a scene-source-frame camera-to-world matrix
+// (OpenGL convention: camera looks down -Z, +Y up) plus pinhole intrinsics.
+// Source frame -> display frame follows coordinateFrame.sourceToDisplay:
+// display = [x - offset[0], elevation, -y - offset[1]].
+const SOURCE_TO_DISPLAY = new THREE.Matrix4().set(
+  1, 0, 0, 0,
+  0, 0, 1, 0,
+  0, -1, 0, 0,
+  0, 0, 0, 1,
+);
+// Equirect texture centre lands on the sphere's local -X in three.js after the
+// inside-out scale(-1,1,1); rotate -90 deg about Y so it faces the camera -Z.
+const PANO_CENTER_FIX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
+
+function displayOffsetOf() {
+  return sceneData?.focusEnvelope?.displayOffset || rawSceneV2?.meta?.displayOffset || [0, 0];
+}
+
+function photoPoseMatrix(photo) {
+  const m = photo?.transformMatrix;
+  if (!Array.isArray(m) || m.length < 3) return null;
+  const source = new THREE.Matrix4().set(
+    m[0][0], m[0][1], m[0][2], m[0][3],
+    m[1][0], m[1][1], m[1][2], m[1][3],
+    m[2][0], m[2][1], m[2][2], m[2][3],
+    0, 0, 0, 1,
+  );
+  const pose = new THREE.Matrix4().multiplyMatrices(SOURCE_TO_DISPLAY, source);
+  const offset = displayOffsetOf();
+  pose.elements[12] -= offset[0];
+  pose.elements[14] -= offset[1];
+  return pose;
+}
+
+function photoVerticalFovDeg(photo) {
+  const intrinsics = photo?.intrinsics;
+  if (intrinsics?.flY && intrinsics?.height) {
+    return THREE.MathUtils.radToDeg(2 * Math.atan((intrinsics.height / 2) / intrinsics.flY));
+  }
+  return 75;
+}
+
+function updateFrustumToggle() {
+  const button = document.querySelector('#frustum-toggle');
+  if (!button) return;
+  const posedCount = (sceneData?.photos || []).filter((photo) => Array.isArray(photo.transformMatrix)).length;
+  button.hidden = posedCount <= PHOTO_MARKER_BUDGET;
+  button.textContent = t(photoMarkersShowAll ? 'photoFrustumsSampled' : 'photoFrustumsAll');
+}
+
+function buildPhotoMarkers() {
+  disposeGroupChildren(photoMarkerGroup);
+  const posed = (sceneData?.photos || [])
+    .map((photo, index) => ({ photo, index }))
+    .filter((entry) => Array.isArray(entry.photo.transformMatrix));
+  const stride = (!photoMarkersShowAll && posed.length > PHOTO_MARKER_BUDGET)
+    ? Math.ceil(posed.length / PHOTO_MARKER_BUDGET)
+    : 1;
+  posed.forEach((entry, order) => {
+    if (order % stride) return;
+    const pose = photoPoseMatrix(entry.photo);
+    if (!pose) return;
+    const marker = new THREE.Group();
+    const depth = 0.42;
+    const halfY = Math.tan(THREE.MathUtils.degToRad(photoVerticalFovDeg(entry.photo)) / 2) * depth;
+    const aspect = entry.photo.intrinsics
+      ? entry.photo.intrinsics.width / entry.photo.intrinsics.height
+      : 1;
+    const halfX = halfY * aspect;
+    const corners = [[-halfX, -halfY], [halfX, -halfY], [halfX, halfY], [-halfX, halfY]];
+    const points = [];
+    for (let index = 0; index < 4; index += 1) {
+      const [x0, y0] = corners[index];
+      const [x1, y1] = corners[(index + 1) % 4];
+      points.push(0, 0, 0, x0, y0, -depth, x0, y0, -depth, x1, y1, -depth);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+    marker.add(new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0xffc857, transparent: true, opacity: 0.9 })));
+    if (entry.photo.projection === 'equirectangular') {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.018, 8, 26), standardMaterial(0xffc857, { roughness: 0.5 }));
+      ring.rotation.x = Math.PI / 2;
+      marker.add(ring);
+    }
+    marker.add(new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 10, 8),
+      standardMaterial(0xffc857, { roughness: 0.4, transparent: true, opacity: 0.85 }),
+    ));
+    marker.traverse((child) => { child.userData.photoIndex = entry.index; });
+    pose.decompose(marker.position, marker.quaternion, new THREE.Vector3());
+    photoMarkerGroup.add(marker);
+  });
+  canvas.dataset.photoMarkerCount = String(photoMarkerGroup.children.length);
+  canvas.dataset.photoMarkerStride = String(stride);
+}
+
+function buildAlignWireframe() {
+  // Bake the current semantic model into an always-on-top wireframe so the
+  // photo underlay never occludes the geometry being verified.
+  const group = new THREE.Group();
+  const material = new THREE.LineBasicMaterial({ color: 0x3af0a4, transparent: true, opacity: 0.85, depthTest: false, fog: false });
+  for (const root of [wallGroup, candidateStructureGroup, objectGroup, reviewObjectGroup]) {
+    root.updateWorldMatrix(true, true);
+    root.traverse((child) => {
+      if (!child.isMesh || !child.geometry) return;
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry, 18), material);
+      edges.applyMatrix4(child.matrixWorld);
+      edges.renderOrder = 30;
+      group.add(edges);
+    });
+  }
+  return group;
+}
+
+function applyPanoOrientation() {
+  if (!photoAlign?.sphere) return;
+  const photo = sceneData.photos[photoAlign.index];
+  const yawOffset = THREE.MathUtils.degToRad(photo.yawOffsetDeg || 0);
+  if (photo.panoOrientation === 'camera') {
+    // Pano stitched in the raw camera frame: apply the full pose rotation.
+    const worldYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOffset);
+    photoAlign.sphere.quaternion.copy(worldYaw).multiply(photoAlign.quaternion).multiply(PANO_CENTER_FIX);
+    return;
+  }
+  // Default: the stitcher outputs gravity-levelled panoramas (verticals are
+  // straight pixel columns), so only the heading of the camera forward axis
+  // orients the sphere; pitch/roll of the pose must NOT tilt it.
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(photoAlign.quaternion);
+  const heading = Math.atan2(-forward.x, -forward.z);
+  photoAlign.sphere.quaternion
+    .setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading + yawOffset)
+    .multiply(PANO_CENTER_FIX);
+}
+
+function applyPhotoOpacity(value) {
+  if (!photoAlign) return;
+  photoAlign.opacity = value;
+  if (photoAlign.photoMaterial) photoAlign.photoMaterial.opacity = value;
+  // Slider contract: 0 = model only, 1 = photo only (wireframe fades out).
+  photoAlign.wireframe.visible = value < 0.995;
+  canvas.dataset.photoOpacity = value.toFixed(2);
+}
+
+function configureAlignControls(kind, position, forward) {
+  clearControlMomentum();
+  camera.position.copy(position);
+  if (kind === 'equirect') {
+    // Free look-around: orbit a point just in front of the optical centre.
+    controls.enabled = true;
+    controls.enablePan = false;
+    controls.enableZoom = false;
+    controls.minDistance = 0.05;
+    controls.maxDistance = 0.2;
+    controls.minPolarAngle = 0.03;
+    controls.maxPolarAngle = Math.PI - 0.03;
+    controls.target.copy(position).addScaledVector(forward, 0.12);
+    controls.update();
+  } else {
+    // Pinhole alignment: the camera must not move at all.
+    controls.enabled = false;
+    controls.target.copy(position).addScaledVector(forward, PHOTO_BILLBOARD_DISTANCE_M);
+    camera.quaternion.copy(photoAlign.quaternion);
+  }
+}
+
+function enterPhotoAlign(index) {
+  const photo = sceneData?.photos?.[index];
+  if (!photo || !Array.isArray(photo.transformMatrix)) return;
+  if (photoAlign) exitPhotoAlign();
+  const wasOrthographic = projectionMode === 'orthographic';
+  if (wasOrthographic) setProjection('perspective');
+  const pose = photoPoseMatrix(photo);
+  if (!pose) return;
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  pose.decompose(position, quaternion, new THREE.Vector3());
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion);
+  photoAlign = {
+    index,
+    kind: photo.projection === 'equirectangular' ? 'equirect' : 'pinhole',
+    position,
+    quaternion,
+    saved: {
+      wasOrthographic,
+      fov: perspectiveCamera.fov,
+      cameraPosition: camera.position.clone(),
+      target: controls.target.clone(),
+      fogDensity: scene3d.fog.density,
+      markersVisible: photoMarkerGroup.visible,
+    },
+    overlay: new THREE.Group(),
+    wireframe: buildAlignWireframe(),
+    photoMaterial: null,
+    sphere: null,
+    opacity: Number(document.querySelector('#photo-opacity').value),
+  };
+  scene3d.add(photoAlign.overlay, photoAlign.wireframe);
+  scene3d.fog.density = 0;
+  photoMarkerGroup.visible = false;
+  configureAlignControls(photoAlign.kind, position, forward);
+  perspectiveCamera.fov = photoAlign.kind === 'equirect' ? 70 : photoVerticalFovDeg(photo);
+  perspectiveCamera.updateProjectionMatrix();
+  new THREE.TextureLoader().load(resolveSceneAsset(photo.path), (texture) => {
+    if (!photoAlign || photoAlign.index !== index) { texture.dispose(); return; }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const aspect = texture.image.width / texture.image.height;
+    const equirect = photo.projection === 'equirectangular' || Math.abs(aspect - 2) < 0.2;
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: photoAlign.opacity, depthTest: false, depthWrite: false, fog: false });
+    photoAlign.photoMaterial = material;
+    if (equirect) {
+      if (photoAlign.kind !== 'equirect') {
+        photoAlign.kind = 'equirect';
+        configureAlignControls('equirect', position, forward);
+      }
+      const geometry = new THREE.SphereGeometry(24, 72, 36);
+      geometry.scale(-1, 1, 1);
+      const sphere = new THREE.Mesh(geometry, material);
+      sphere.renderOrder = 20;
+      sphere.position.copy(position);
+      photoAlign.sphere = sphere;
+      applyPanoOrientation();
+      photoAlign.overlay.add(sphere);
+    } else {
+      const fovRad = THREE.MathUtils.degToRad(photoVerticalFovDeg(photo));
+      const height = 2 * PHOTO_BILLBOARD_DISTANCE_M * Math.tan(fovRad / 2);
+      const width = height * (photo.intrinsics ? photo.intrinsics.width / photo.intrinsics.height : aspect);
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+      plane.renderOrder = 20;
+      plane.position.copy(position).addScaledVector(forward, PHOTO_BILLBOARD_DISTANCE_M);
+      plane.quaternion.copy(quaternion);
+      photoAlign.overlay.add(plane);
+    }
+    applyPhotoOpacity(photoAlign.opacity);
+    canvas.dataset.photoAlignMode = photoAlign.kind;
+  });
+  applyPhotoOpacity(photoAlign.opacity);
+  document.querySelector('#photo-align-label').textContent = photo.id || photo.path;
+  document.querySelector('#photo-align-hud').hidden = false;
+  canvas.dataset.photoAlignMode = photoAlign.kind;
+  canvas.dataset.photoAlignIndex = String(index);
+}
+
+function exitPhotoAlign() {
+  if (!photoAlign) return;
+  const { saved } = photoAlign;
+  for (const node of [photoAlign.overlay, photoAlign.wireframe]) {
+    scene3d.remove(node);
+    node.traverse((child) => {
+      child.geometry?.dispose?.();
+      const materials = Array.isArray(child.material) ? child.material : (child.material ? [child.material] : []);
+      materials.forEach((material) => { material.map?.dispose?.(); material.dispose?.(); });
+    });
+  }
+  photoAlign = null;
+  scene3d.fog.density = saved.fogDensity;
+  perspectiveCamera.fov = saved.fov;
+  perspectiveCamera.updateProjectionMatrix();
+  photoMarkerGroup.visible = saved.markersVisible;
+  controls.enabled = true;
+  configureControls(controls, saved.target);
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  camera.position.copy(saved.cameraPosition);
+  camera.lookAt(saved.target);
+  clearControlMomentum();
+  if (saved.wasOrthographic) setProjection('orthographic');
+  document.querySelector('#photo-align-hud').hidden = true;
+  delete canvas.dataset.photoAlignMode;
+  delete canvas.dataset.photoAlignIndex;
+}
+
+// Debug hook for calibrating pano yaw against real geometry; the accepted
+// value is then baked into meta.photos[].yawOffsetDeg by the inject script.
+window.__photoAlignDebug = {
+  setYawOffset(deg) {
+    const photo = sceneData?.photos?.[photoAlign?.index];
+    if (!photo) return null;
+    photo.yawOffsetDeg = deg;
+    applyPanoOrientation();
+    return deg;
+  },
+  state: () => (photoAlign ? { index: photoAlign.index, kind: photoAlign.kind } : null),
+};
+
+// --- P2-5: unified review panel ------------------------------------------
+
+function reviewWarningsFor(nodeId) {
+  const issues = rawSceneV2?.review?.issues;
+  if (!Array.isArray(issues)) return [];
+  return issues.filter((issue) => issue && (issue.nodeId === nodeId
+    || (Array.isArray(issue.nodeIds) && issue.nodeIds.includes(nodeId))
+    || (Array.isArray(issue.targetNodeIds) && issue.targetNodeIds.includes(nodeId))));
+}
+
+function reviewElements() {
+  // Prefer the raw Scene V2 authority graph: it keeps per-node statuses and
+  // evidence sources that the compiled view model flattens away.
+  if (rawSceneV2?.nodes) {
+    return Object.values(rawSceneV2.nodes)
+      .filter((node) => node && node.type !== 'level')
+      .map((node) => {
+        const entry = rawSceneV2.evidence?.[node.id] || {};
+        const gates = entry.gates || node.gates || {};
+        return {
+          id: node.id,
+          type: node.type || 'unknown',
+          status: entry.status || 'candidate',
+          support: gates.support ?? gates.supportPoints ?? node.support,
+          residualP90: gates.residualP90 ?? gates.residual_p90 ?? node.residualP90,
+          confidence: node.confidence ?? gates.confidence ?? entry.confidence,
+          sources: Array.isArray(entry.sources) ? entry.sources : [],
+          warnings: reviewWarningsFor(node.id),
+          node,
+        };
+      });
+  }
+  const rows = [];
+  for (const structure of sceneData?.structures || []) {
+    rows.push({ id: structure.id, type: structure.category || 'structure', status: structure.decision?.status || 'accepted-measured', support: undefined, residualP90: undefined, confidence: undefined, sources: [], warnings: [], node: structure });
+  }
+  for (const structure of sceneData?.structureCandidates || []) {
+    rows.push({ id: structure.id, type: structure.category || 'structure', status: structure.decision?.status || 'candidate', support: undefined, residualP90: undefined, confidence: undefined, sources: [], warnings: [], node: structure });
+  }
+  for (const object of sceneData?.objects || []) {
+    const status = ['accepted-measured', 'accepted-inferred', 'candidate', 'rejected'].includes(object.furnitureValidation?.evidenceClass)
+      ? object.furnitureValidation.evidenceClass
+      : (object.deliveryValidation?.status === 'PASS' ? 'accepted-measured' : 'candidate');
+    rows.push({ id: object.id, type: object.category || 'item', status, support: object.furnitureValidation?.pointCount, residualP90: undefined, confidence: object.confidence, sources: [], warnings: [], node: null });
+  }
+  return rows;
+}
+
+function reviewStatusKey(status) {
+  if (status === 'accepted-measured') return 'stMeasured';
+  if (status === 'accepted-inferred') return 'stInferred';
+  if (status === 'rejected') return 'stRejected';
+  return 'stCandidate';
+}
+
+function reviewSourcesHtml(row) {
+  const items = row.sources.length ? row.sources.map((source) => {
+    const path = source.path || source.file || '';
+    const isImage = /\.(png|jpe?g|webp|gif|bmp)$/i.test(path);
+    const label = `${source.type || 'source'} · ${path}${source.note ? ` · ${source.note}` : ''}`;
+    return isImage
+      ? `<button type="button" data-review-preview="${encodeURIComponent(path)}">${label}</button>`
+      : `<span class="src">${label}</span>`;
+  }).join('') : `<span class="src">${t('reviewNoSources')}</span>`;
+  return `<div class="review-sources"><p>${t('reviewEvidenceSources')}</p>${items}</div>`;
+}
+
+function reviewRowHtml(row) {
+  const color = REVIEW_STATUS_COLORS[row.status] || '#8a949c';
+  const metrics = [
+    row.support !== undefined && row.support !== null ? `support ${row.support}` : '',
+    Number.isFinite(row.residualP90) ? `P90 ${Number(row.residualP90).toFixed(3)}` : '',
+    Number.isFinite(row.confidence) ? `conf ${Math.round(row.confidence * 100)}%` : '',
+  ].filter(Boolean).join(' · ');
+  const warn = row.warnings.length ? `<span class="review-warn">⚠ ${row.warnings.length} ${t('reviewWarning')}</span>` : '<span></span>';
+  const expanded = reviewExpandedId === row.id ? reviewSourcesHtml(row) : '';
+  return `
+    <button type="button" class="review-row${reviewExpandedId === row.id ? ' active' : ''}" data-review-id="${row.id}" style="--status-color:${color}">
+      <i></i><span><b>${row.id}</b><small>${metrics || '—'}</small></span>${warn}
+    </button>${expanded}`;
+}
+
+function renderReviewPanel() {
+  const panel = document.querySelector('#review-panel');
+  if (!reviewPanelOpen || !sceneData) { panel.hidden = true; return; }
+  const rows = reviewElements();
+  const counts = {};
+  rows.forEach((row) => { counts[row.status] = (counts[row.status] || 0) + 1; });
+  const filtered = rows.filter((row) => (reviewFilter === 'candidate' ? row.status === 'candidate'
+    : reviewFilter === 'warning' ? row.warnings.length > 0 : true));
+  const groups = new Map();
+  filtered.forEach((row) => {
+    if (!groups.has(row.type)) groups.set(row.type, []);
+    groups.get(row.type).push(row);
+  });
+  const stats = Object.keys(REVIEW_STATUS_COLORS)
+    .map((status) => `<span><i style="background:${REVIEW_STATUS_COLORS[status]}"></i>${t(reviewStatusKey(status))} ${counts[status] || 0}</span>`)
+    .join('');
+  const filters = [['all', 'reviewAll'], ['candidate', 'reviewOnlyCandidate'], ['warning', 'reviewOnlyWarning']]
+    .map(([key, label]) => `<button type="button" data-review-filter="${key}" class="${reviewFilter === key ? 'active' : ''}">${t(label)}</button>`)
+    .join('');
+  const body = [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([type, members]) => `
+      <p class="review-group-title">${t(type) !== type ? t(type) : type} · ${members.length}</p>
+      ${members.map((row) => reviewRowHtml(row)).join('')}
+    `).join('') || `<p class="review-group-title">${t('reviewEmpty')}</p>`;
+  panel.innerHTML = `
+    <header>
+      <p class="section-kicker">${t('reviewMode')}</p>
+      <div class="review-stats">${stats}</div>
+      <div class="review-filters">${filters}</div>
+    </header>
+    <div class="review-body">${body}</div>
+  `;
+  panel.hidden = false;
+  canvas.dataset.reviewPanelRows = String(filtered.length);
+  panel.querySelector('.review-row.active')?.scrollIntoView({ block: 'center' });
+}
+
+function clearReviewHighlight() {
+  for (const node of reviewHighlightedMeshes) {
+    if (node.material?.emissive && node.userData.reviewOriginalEmissive !== undefined) {
+      node.material.emissive.setHex(node.userData.reviewOriginalEmissive);
+      node.material.emissiveIntensity = node.userData.reviewOriginalEmissiveIntensity;
+      if (node.userData.reviewOriginalOpacity !== undefined) node.material.opacity = node.userData.reviewOriginalOpacity;
+      delete node.userData.reviewOriginalEmissive;
+      delete node.userData.reviewOriginalOpacity;
+    }
+  }
+  reviewHighlightedMeshes = [];
+}
+
+function highlightStructureMeshes(id) {
+  clearReviewHighlight();
+  for (const root of [wallGroup, candidateStructureGroup]) {
+    root.traverse((child) => {
+      const structure = child.userData.structure || child.userData.structureCandidate;
+      const match = structure && (structure.id === id || structure.sourceId === id || String(structure.id).startsWith(`${id}::`));
+      if (!match) return;
+      child.traverse((node) => {
+        if (!node.isMesh || !node.material?.emissive) return;
+        if (node.userData.reviewOriginalEmissive === undefined) {
+          node.userData.reviewOriginalEmissive = node.material.emissive.getHex();
+          node.userData.reviewOriginalEmissiveIntensity = node.material.emissiveIntensity;
+          node.userData.reviewOriginalOpacity = node.material.opacity;
+        }
+        node.material.emissive.setHex(0x23c483);
+        node.material.emissiveIntensity = 0.85;
+        // Candidate fills are nearly invisible (opacity 0.075); lift them so
+        // the focused element actually reads as highlighted.
+        if (node.material.transparent && node.material.opacity < 0.3) node.material.opacity = 0.35;
+        reviewHighlightedMeshes.push(node);
+      });
+    });
+  }
+  return reviewHighlightedMeshes.length > 0;
+}
+
+function nodeDisplayAnchor(node) {
+  if (!node) return null;
+  const offset = displayOffsetOf();
+  const toDisplay = (x, y, elevation) => new THREE.Vector3(x - offset[0], elevation, -y - offset[1]);
+  if (node.hostOffsetM !== undefined && rawSceneV2) {
+    const host = rawSceneV2.nodes?.[node.parentId];
+    if (Array.isArray(host?.start) && Array.isArray(host?.end)) {
+      const dx = host.end[0] - host.start[0];
+      const dy = host.end[1] - host.start[1];
+      const length = Math.hypot(dx, dy) || 1;
+      const x = host.start[0] + (dx / length) * node.hostOffsetM;
+      const y = host.start[1] + (dy / length) * node.hostOffsetM;
+      return toDisplay(x, y, (host.baseHeight || 0) + (node.sillHeight || 0) + (node.height || 1) / 2);
+    }
+  }
+  if (Array.isArray(node.start) && Array.isArray(node.end)) {
+    // Raw V2 nodes carry plan [x, y]; compiled V1 segments carry display
+    // [x, elevation, z] and must not be re-transformed.
+    if (node.start.length === 3) {
+      return new THREE.Vector3(
+        (node.start[0] + node.end[0]) / 2,
+        (node.baseHeight || 0) + (node.height || 2) / 2,
+        (node.start[2] + node.end[2]) / 2,
+      );
+    }
+    const base = (node.baseHeight || 0) + (node.sillHeight || 0);
+    return toDisplay((node.start[0] + node.end[0]) / 2, (node.start[1] + node.end[1]) / 2, base + (node.height || 2) / 2);
+  }
+  if (Array.isArray(node.center)) {
+    if (node.center.length === 3) {
+      return new THREE.Vector3(node.center[0], node.center[1] + (node.size?.[1] || node.height || 1) / 2, node.center[2]);
+    }
+    return toDisplay(node.center[0], node.center[1], (node.elevation || node.baseHeight || 0) + (node.size?.[1] || node.height || 1) / 2);
+  }
+  if (Array.isArray(node.polygon) && node.polygon.length) {
+    const cx = node.polygon.reduce((sum, point) => sum + point[0], 0) / node.polygon.length;
+    const cy = node.polygon.reduce((sum, point) => sum + point[1], 0) / node.polygon.length;
+    return toDisplay(cx, cy, node.elevation || 0);
+  }
+  return null;
+}
+
+function focusDisplayPoint(anchor) {
+  if (photoAlign) exitPhotoAlign();
+  clearControlMomentum();
+  controls.target.copy(anchor);
+  camera.position.copy(anchor.clone().add(new THREE.Vector3(3.6, 2.6, 4.0)));
+  if (projectionMode === 'orthographic') {
+    orthographicHalfHeight = 6;
+    orthographicCamera.zoom = 1;
+    applyOrthographicFrustum();
+  }
+  camera.lookAt(controls.target);
+  controls.update();
+  canvas.dataset.cameraPosition = camera.position.toArray().map((value) => value.toFixed(3)).join(',');
+  canvas.dataset.cameraTarget = controls.target.toArray().map((value) => value.toFixed(3)).join(',');
+}
+
+function focusReviewElement(row) {
+  reviewExpandedId = row.id;
+  if (objectMeshes.has(row.id)) {
+    clearReviewHighlight();
+    if (photoAlign) exitPhotoAlign();
+    selectObject(row.id, true);
+  } else {
+    const highlighted = highlightStructureMeshes(row.id);
+    let anchor = null;
+    if (highlighted) {
+      const box = new THREE.Box3();
+      for (const mesh of reviewHighlightedMeshes) box.expandByObject(mesh);
+      anchor = box.getCenter(new THREE.Vector3());
+    } else {
+      anchor = nodeDisplayAnchor(row.node);
+    }
+    if (anchor) focusDisplayPoint(anchor);
+  }
+  renderReviewPanel();
+}
+
+function toggleReviewPanel(force) {
+  reviewPanelOpen = force !== undefined ? force : !reviewPanelOpen;
+  document.querySelector('#review-mode-toggle').classList.toggle('active', reviewPanelOpen);
+  document.documentElement.dataset.reviewMode = reviewPanelOpen ? 'on' : 'off';
+  if (!reviewPanelOpen) {
+    clearReviewHighlight();
+    reviewExpandedId = null;
+  }
+  renderReviewPanel();
+}
+
+function openReviewPreview(path) {
+  const overlay = document.querySelector('#review-preview');
+  overlay.innerHTML = `<figure style="margin:0"><img src="${resolveSceneAsset(path)}" alt="${path}"><figcaption>${path}</figcaption></figure>`;
+  overlay.hidden = false;
 }
 
 function clearSelectionHighlight() {
@@ -1066,8 +1645,10 @@ function selectObject(objectId, moveCamera = false) {
 }
 
 function setMode(mode) {
+  if (photoAlign) exitPhotoAlign();
   document.querySelectorAll('[data-mode]').forEach((button) => button.classList.toggle('active', button.dataset.mode === mode));
   pointGroup.visible = mode !== 'model';
+  photoMarkerGroup.visible = mode !== 'model';
   wallGroup.visible = mode !== 'raw';
   candidateStructureGroup.visible = mode === 'overlay';
   objectGroup.visible = mode !== 'raw';
@@ -1130,6 +1711,7 @@ function replaceCamera(nextCamera, target, position) {
 function setProjection(mode) {
   const nextMode = mode === 'orthographic' ? 'orthographic' : 'perspective';
   if (nextMode === projectionMode) return;
+  if (photoAlign) return; // projection is dictated by the photo while aligned
   clearControlMomentum();
   const target = controls.target.clone();
   const direction = camera.position.clone().sub(target).normalize();
@@ -1149,6 +1731,7 @@ function setProjection(mode) {
 }
 
 function fitView(top = false) {
+  if (photoAlign) exitPhotoAlign();
   const width = sceneData.focusEnvelope.width;
   const depth = sceneData.focusEnvelope.depth;
   const distance = Math.max(width, depth) * (top ? 0.95 : 0.78);
@@ -1171,7 +1754,9 @@ function fitView(top = false) {
 }
 
 function isTypingTarget(target) {
-  return target instanceof HTMLElement && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+  // Range sliders (photo opacity) don't capture text; Esc must keep working
+  // right after dragging one.
+  return target instanceof HTMLElement && Boolean(target.closest('input:not([type="range"]), textarea, select, [contenteditable="true"]'));
 }
 
 function updateKeyboardNavigation(deltaSeconds) {
@@ -1224,6 +1809,23 @@ function enforceCameraFloorClearance() {
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
+let pointerDownAt = null;
+canvas.addEventListener('pointerdown', (event) => { pointerDownAt = [event.clientX, event.clientY]; });
+// Single click (not a drag) on a frame marker enters the photo-aligned view.
+canvas.addEventListener('click', (event) => {
+  if (photoAlign || !pointerDownAt) return;
+  if (Math.hypot(event.clientX - pointerDownAt[0], event.clientY - pointerDownAt[1]) > 6) return;
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(photoMarkerGroup.children, true)
+    .find((entry) => entry.object.isMesh && entry.object.userData.photoIndex !== undefined);
+  if (hit) {
+    showPhoto(hit.object.userData.photoIndex);
+    enterPhotoAlign(hit.object.userData.photoIndex);
+  }
+});
 canvas.addEventListener('dblclick', (event) => {
   const rect = canvas.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1251,12 +1853,49 @@ document.addEventListener('click', (event) => {
   if (row) selectObject(row.dataset.objectId, true);
   const photo = event.target.closest('[data-photo-index]');
   if (photo) showPhoto(Number(photo.dataset.photoIndex));
+  const reviewToggle = event.target.closest('#review-mode-toggle');
+  if (reviewToggle) toggleReviewPanel();
+  const filterButton = event.target.closest('[data-review-filter]');
+  if (filterButton) {
+    reviewFilter = filterButton.dataset.reviewFilter;
+    renderReviewPanel();
+  }
+  const previewSource = event.target.closest('[data-review-preview]');
+  if (previewSource) {
+    openReviewPreview(decodeURIComponent(previewSource.dataset.reviewPreview));
+    return;
+  }
+  const reviewRow = event.target.closest('[data-review-id]');
+  if (reviewRow) {
+    const match = reviewElements().find((element) => element.id === reviewRow.dataset.reviewId);
+    if (match) focusReviewElement(match);
+  }
+  const previewOverlay = event.target.closest('#review-preview');
+  if (previewOverlay) previewOverlay.hidden = true;
+  const alignEnter = event.target.closest('#photo-align-enter');
+  if (alignEnter) enterPhotoAlign(Number(alignEnter.dataset.photoIndex));
+  const alignExit = event.target.closest('#photo-align-exit');
+  if (alignExit) exitPhotoAlign();
+  const frustumToggle = event.target.closest('#frustum-toggle');
+  if (frustumToggle) {
+    photoMarkersShowAll = !photoMarkersShowAll;
+    buildPhotoMarkers();
+    updateFrustumToggle();
+  }
+});
+document.querySelector('#photo-opacity').addEventListener('input', (event) => {
+  applyPhotoOpacity(Number(event.target.value));
 });
 document.querySelector('#fit-view').addEventListener('click', () => fitView(false));
 document.querySelector('#top-view').addEventListener('click', () => fitView(true));
 canvas.addEventListener('pointerdown', () => canvas.focus({ preventScroll: true }));
 window.addEventListener('keydown', (event) => {
   if (isTypingTarget(event.target)) return;
+  if (photoAlign) {
+    // Keyboard navigation would break the pose alignment; only Esc acts here.
+    if (!event.repeat && event.code === 'Escape') exitPhotoAlign();
+    return;
+  }
   if (!event.repeat && event.code === 'KeyP') setProjection(projectionMode === 'perspective' ? 'orthographic' : 'perspective');
   if (!event.repeat && event.code === 'Home') fitView(false);
   if (!event.repeat && event.code === 'KeyT') fitView(true);
@@ -1289,9 +1928,16 @@ function resize() {
 
 function animate() {
   resize();
-  updateKeyboardNavigation(navigationClock.getDelta());
-  controls.update();
-  enforceCameraFloorClearance();
+  if (!photoAlign) {
+    updateKeyboardNavigation(navigationClock.getDelta());
+    controls.update();
+    enforceCameraFloorClearance();
+  } else {
+    navigationClock.getDelta();
+    // Pinhole alignment keeps the camera pinned to the photo pose; the pano
+    // sphere allows free look-around (and may sit below the walk floor limit).
+    if (photoAlign.kind === 'equirect') controls.update();
+  }
   renderer.render(scene3d, camera);
   requestAnimationFrame(animate);
 }
@@ -1318,7 +1964,10 @@ function adaptFogToScene(data) {
 // camera - the live-watch mode uses this so an agent editing the scene file
 // gets an in-place updating view.
 function rebuildScene(data) {
+  const activePhotoIndex = photoAlign ? photoAlign.index : null;
+  if (photoAlign) exitPhotoAlign();
   clearSelectionHighlight();
+  reviewHighlightedMeshes = [];
   selectedGroup = null;
   for (const group of [wallGroup, candidateStructureGroup, objectGroup, reviewObjectGroup, cameraGroup]) {
     disposeGroupChildren(group);
@@ -1334,6 +1983,11 @@ function rebuildScene(data) {
   (data.objects || []).forEach(buildObject);
   buildCameraPath(data.cameraPath || []);
   renderPanels(data);
+  buildPhotoMarkers();
+  if (reviewPanelOpen) renderReviewPanel();
+  if (activePhotoIndex !== null && data.photos?.[activePhotoIndex]?.transformMatrix) {
+    enterPhotoAlign(activePhotoIndex);
+  }
 }
 
 async function init() {
@@ -1343,13 +1997,16 @@ async function init() {
     // ?scene=/outputs/foo/scene.json points the viewer at any scene file the
     // local server exposes; ?watch=2 polls it and hot-rebuilds on change.
     const scenePath = startup.get('scene') || './generated/scene.json';
+    sceneBaseUrl = new URL(scenePath, window.location.href);
     const response = await fetch(scenePath, { cache: 'no-store' });
     if (!response.ok) throw new Error(`${t('sceneLoadFailed')} (${response.status})`);
     let sceneText = await response.text();
     sceneData = JSON.parse(sceneText);
     // Scene V2 authority graphs compile into the V1 view-model here; the
     // compile layer owns joinery, hosted-opening splits and frame mapping.
-    if (isSceneV2(sceneData)) sceneData = compileSceneV2(sceneData);
+    // The raw graph is kept for the review panel (statuses + evidence).
+    rawSceneV2 = isSceneV2(sceneData) ? sceneData : null;
+    if (rawSceneV2) sceneData = compileSceneV2(rawSceneV2);
     adaptFogToScene(sceneData);
     buildGround(sceneData.focusEnvelope);
     buildWalls(sceneData.walls);
@@ -1368,7 +2025,8 @@ async function init() {
           if (text === sceneText) return;
           sceneText = text;
           let next = JSON.parse(text);
-          if (isSceneV2(next)) next = compileSceneV2(next);
+          rawSceneV2 = isSceneV2(next) ? next : null;
+          if (rawSceneV2) next = compileSceneV2(rawSceneV2);
           sceneData = next;
           rebuildScene(sceneData);
           canvas.dataset.sceneRebuildAt = String(Date.now());
@@ -1391,6 +2049,7 @@ async function init() {
       sceneData.portableModelOnly = true;
     }
     renderPanels(sceneData);
+    buildPhotoMarkers();
     applyLanguage(currentLanguage, false);
     fitView(startup.get('view') === 'top');
     setMode(['raw', 'overlay', 'model'].includes(startup.get('mode')) ? startup.get('mode') : 'overlay');
