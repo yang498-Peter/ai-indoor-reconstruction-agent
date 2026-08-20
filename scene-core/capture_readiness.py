@@ -351,6 +351,190 @@ def validate_pose_alignment(manifest: dict[str, Any], index: Any) -> dict[str, A
     }
 
 
+def _frame_lookup_by_id(capture_root: Path, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    """Map pose-validation frameIds to projection frames (lazy import)."""
+    import photo_projection
+
+    lookup: dict[str, Any] = {}
+    for source in sources:
+        relative = str(source.get("path", ""))
+        transforms_path = capture_root / relative
+        if not transforms_path.is_file():
+            continue
+        try:
+            frames = photo_projection.load_frames(transforms_path, image_root=capture_root)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+        for index, frame in enumerate(frames):
+            lookup[f"{Path(relative).as_posix()}#{index}"] = frame
+    return lookup
+
+
+def _reprojection_score(
+    frame: Any,
+    xyz: np.ndarray,
+    gray: np.ndarray,
+    *,
+    block_px: int,
+) -> tuple[float | None, int]:
+    """Color-consistency score for one frame.
+
+    Projects the LAS sample into the frame, keeps the nearest point per
+    ``block_px`` pixel block (a coarse z-buffer that suppresses see-through
+    leakage), and correlates the block's LAS gray value with the photo pixel
+    under it.  Returns ``(score, block_count)``; score is the Pearson
+    correlation clamped to [0, 1] (a wrong pose decorrelates the two signals,
+    so ~0 means "no evidence this pose looks at this cloud").
+    """
+    import photo_projection
+    from PIL import Image
+
+    uv, depth, in_front = photo_projection.project_points(frame, xyz)
+    visible = in_front & photo_projection.in_image(frame, uv)
+    count = int(visible.sum())
+    if count < 32:
+        return None, 0
+    u = uv[visible, 0]
+    v = uv[visible, 1]
+    d = depth[visible]
+    g = gray[visible]
+    columns = frame.camera.width // block_px + 2
+    key = (v // block_px).astype(np.int64) * columns + (u // block_px).astype(np.int64)
+    order = np.argsort(d, kind="stable")
+    ordered_key = key[order]
+    first = np.unique(ordered_key, return_index=True)[1]
+    selected = order[first]
+    if len(selected) < 8:
+        return None, len(selected)
+    image = np.asarray(Image.open(frame.image_path).convert("L"), dtype=np.float64)
+    px = np.clip(u[selected].astype(np.int64), 0, frame.camera.width - 1)
+    py = np.clip(v[selected].astype(np.int64), 0, frame.camera.height - 1)
+    photo_gray = image[py, px]
+    las_gray = g[selected]
+    if float(np.std(photo_gray)) < 1e-9 or float(np.std(las_gray)) < 1e-9:
+        return 0.0, len(selected)
+    correlation = float(np.corrcoef(photo_gray, las_gray)[0, 1])
+    if not math.isfinite(correlation):
+        return 0.0, len(selected)
+    return max(0.0, correlation), len(selected)
+
+
+def validate_pose_reprojection(
+    manifest: dict[str, Any],
+    index: Any,
+    *,
+    capture_root: Path | None = None,
+    block_px: int = 16,
+    min_blocks: int = 120,
+    min_score: float = 0.2,
+    min_usable_cap: int = 20,
+    min_usable_fraction: float = 0.30,
+    max_sample_points: int = 400_000,
+) -> dict[str, Any]:
+    """Per-frame quantified pose gate (pose-validation-v1 compatible).
+
+    Upgrade over :func:`validate_pose_alignment`: instead of the all-or-
+    nothing "80% of camera centres sit inside the expanded bounds" rule, every
+    frame gets a quantified alignment score (projected LAS color vs photo
+    pixel color, block-median z-buffered; see :func:`_reprojection_score`) and
+    frames pass or fail **individually**.  The artifact keeps every field the
+    v1 schema had (status/checks/frames/...) and adds ``usableFrames`` /
+    ``rejectedFrames`` so downstream stages can consume good frames from a
+    batch that contains a stretch of bad poses.  Overall PASS requires
+    ``usable >= min(min_usable_cap, ceil(min_usable_fraction * total))``.
+
+    The coarse bounds check stays as a fast-path prefilter: frames it rejects
+    are marked ``REJECTED_COARSE`` without any image IO.
+    """
+    coarse = validate_pose_alignment(manifest, index)
+    reprojection_meta: dict[str, Any] = {
+        "blockPx": block_px,
+        "minBlocks": min_blocks,
+        "minScore": min_score,
+        "metric": "block-median z-buffered LAS-gray vs photo-gray Pearson correlation, clamped to [0,1]",
+    }
+    if not coarse.get("frames"):
+        return {
+            **coarse,
+            "reprojection": reprojection_meta,
+            "usableFrames": [],
+            "rejectedFrames": [
+                {"frameId": frame.get("frameId"), "reason": "REJECTED_COARSE"}
+                for frame in coarse.get("frames", [])
+            ],
+            "usableFrameCount": 0,
+            "requiredUsableFrameCount": 1,
+        }
+
+    root = Path(capture_root) if capture_root is not None else Path(str(manifest.get("captureRoot", "")))
+    pose = manifest.get("poseValidation") or {}
+    lookup = _frame_lookup_by_id(root, pose.get("sources", []))
+
+    every = max(1, int(index.manifest["indexedPointCount"]) // max_sample_points)
+    sample = index.query_all(every=every)
+    xyz = np.stack([sample.x, sample.y, sample.z], axis=1)
+    has_color = bool(index.manifest.get("hasColor")) and sample.point_count > 0
+    gray = sample.rgb.astype(np.float64).mean(axis=1) if has_color else np.zeros(len(xyz))
+
+    frames_out: list[dict[str, Any]] = []
+    usable: list[str] = []
+    rejected: list[dict[str, Any]] = []
+    for frame_record in coarse["frames"]:
+        frame_id = str(frame_record.get("frameId"))
+        record = dict(frame_record)
+        projection_frame = lookup.get(frame_id)
+        score: float | None = None
+        blocks = 0
+        if not frame_record.get("aligned"):
+            status = "REJECTED_COARSE"
+        elif projection_frame is None or projection_frame.image_path is None:
+            status = "REJECTED_NO_IMAGE"
+        elif not has_color:
+            # Without color the quantified metric is undefined; fall back to
+            # the coarse geometric result rather than silently passing.
+            status = "USABLE_GEOMETRY_ONLY"
+        else:
+            score, blocks = _reprojection_score(
+                projection_frame, xyz, gray, block_px=block_px
+            )
+            if score is None or blocks < min_blocks:
+                status = "REJECTED_LOW_OVERLAP"
+            elif score >= min_score:
+                status = "USABLE"
+            else:
+                status = "REJECTED_LOW_SCORE"
+        record["reprojectionScore"] = None if score is None else round(score, 4)
+        record["reprojectionBlocks"] = blocks
+        record["status"] = status
+        frames_out.append(record)
+        if status.startswith("USABLE"):
+            usable.append(frame_id)
+        else:
+            rejected.append({"frameId": frame_id, "reason": status})
+
+    total = len(frames_out)
+    required = max(1, min(min_usable_cap, int(math.ceil(min_usable_fraction * total))))
+    overall_pass = len(usable) >= required
+    checks = dict(coarse["checks"])
+    checks["reprojectionPerFrame"] = "PASS" if overall_pass else "FAIL"
+    return {
+        **coarse,
+        "status": "PASS" if overall_pass else "FAIL",
+        "checks": checks,
+        "frames": frames_out,
+        "reprojection": {
+            **reprojection_meta,
+            "sampleEvery": every,
+            "samplePointCount": int(len(xyz)),
+            "hasColor": has_color,
+        },
+        "usableFrames": usable,
+        "rejectedFrames": rejected,
+        "usableFrameCount": len(usable),
+        "requiredUsableFrameCount": required,
+    }
+
+
 def write_json_atomic(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -375,6 +559,16 @@ def main() -> int:
     pose.add_argument("--manifest", required=True, type=Path)
     pose.add_argument("--index", required=True, type=Path)
     pose.add_argument("--output", required=True, type=Path)
+    reproj = subparsers.add_parser(
+        "validate-pose-reprojection",
+        help="per-frame quantified pose gate: coarse prefilter + LAS-vs-photo color consistency",
+    )
+    reproj.add_argument("--manifest", required=True, type=Path)
+    reproj.add_argument("--index", required=True, type=Path)
+    reproj.add_argument("--output", required=True, type=Path)
+    reproj.add_argument("--capture-root", type=Path, default=None)
+    reproj.add_argument("--min-score", type=float, default=0.2)
+    reproj.add_argument("--block-px", type=int, default=16)
     args = parser.parse_args()
 
     if args.command == "adapters":
@@ -387,7 +581,16 @@ def main() -> int:
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     index = CaptureIndex.open(args.index, validate_source=True)
     index.validate_tiles()
-    report = validate_pose_alignment(manifest, index)
+    if args.command == "validate-pose-reprojection":
+        report = validate_pose_reprojection(
+            manifest,
+            index,
+            capture_root=args.capture_root,
+            min_score=args.min_score,
+            block_px=args.block_px,
+        )
+    else:
+        report = validate_pose_alignment(manifest, index)
     write_json_atomic(args.output, report)
     print(json.dumps({"ok": report["status"] == "PASS", "status": report["status"], "output": str(args.output.resolve())}, ensure_ascii=False))
     return 0 if report["status"] == "PASS" else 2
