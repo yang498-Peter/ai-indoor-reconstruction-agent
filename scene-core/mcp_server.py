@@ -56,6 +56,29 @@ api = load_scene_api()
 SceneError = api.SceneError
 
 
+def load_fit_service():
+    """Import fit_service.py by path (same rationale as load_scene_api).
+
+    Loaded lazily on first fit-tool call: fit_service pulls in numpy/laspy via
+    capture_index, and the scene-authoring tool surface must keep working on a
+    host without the point-cloud stack installed.
+    """
+    existing = sys.modules.get("fit_service")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("fit_service", CORE_DIR / "fit_service.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"CANNOT_LOAD_FIT_SERVICE:{CORE_DIR / 'fit_service.py'}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["fit_service"] = module
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as error:
+        del sys.modules["fit_service"]
+        raise SceneError(f"FIT_SERVICE_UNAVAILABLE:{error}")
+    return module
+
+
 # ---------------------------------------------------------------------------
 # Shared JSON Schema fragments
 # ---------------------------------------------------------------------------
@@ -116,6 +139,35 @@ OPENING_PROPERTIES = {
 }
 OPENING_REQUIRED = ["wall", "offset", "width", "height"]
 
+FLOOR_PLANE = {
+    "type": "object",
+    "properties": {
+        "a": {"type": "number"}, "b": {"type": "number"}, "c": {"type": "number"},
+    },
+    "required": ["a", "b", "c"],
+    "additionalProperties": False,
+    "description": "Floor plane z = a*x + b*y + c in source meters (from level_survey.py).",
+}
+
+FIT_PROPERTIES = {
+    "index": {
+        "type": "string",
+        "description": "Path to the capture-index directory (contains capture-index.json).",
+    },
+    "floor_z": {"type": "number",
+                "description": "Flat floor elevation in meters. Provide this or floor_plane."},
+    "floor_plane": FLOOR_PLANE,
+    "band_min": {"type": "number",
+                 "description": "Structural band lower bound in meters above the floor. Default 0.5."},
+    "band_max": {"type": "number",
+                 "description": "Structural band upper bound in meters above the floor. Default 2.4."},
+    "corridor": {"type": "number",
+                 "description": "Half-width in meters of the fit corridor around the line. Default 0.35."},
+    "robust": {"type": "boolean",
+               "description": "Use RANSAC + IRLS outlier-resistant fitting. Default true."},
+    "seed": {"type": "integer", "description": "Deterministic RANSAC seed. Default 0."},
+}
+
 
 AGENT_GUIDE = """# Semantic Scene V2 - agent workflow
 
@@ -127,7 +179,10 @@ never pre-apply it here.
 ## Standard loop
 
 1. `init_scene` once per dataset (refuses to overwrite an existing scene).
-2. `create_wall` for structure, using source plan meters.
+2. `create_wall` for structure, using source plan meters. When a capture index
+   is available, draw a rough line from visual evidence and let `propose_wall`
+   refine it first (measurement only); `refine_wall_line` re-checks an existing
+   wall the same way. Both tools never write -- authoring stays with you.
 3. `add_door` / `add_window` / `add_opening` hosted on a wall, where
    `offset` is the distance from the wall start to the opening CENTER.
 4. `add_slab` / `add_ceiling` / `add_zone` / `add_column` / `add_item` for the
@@ -298,6 +353,65 @@ def h_get_node(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
 def h_validate(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
     api.validate_scene(scene)
     return {"valid": True, "sceneSha256": api.scene_sha256(scene)}
+
+
+def _open_capture_index(args: dict):
+    fit = load_fit_service()
+    try:
+        return fit.CaptureIndex.open(Path(args["index"]))
+    except fit.CaptureIndexError as error:
+        raise SceneError(f"CAPTURE_INDEX_ERROR:{error}")
+
+
+def _run_fit(index, start, end, args: dict) -> dict:
+    fit = load_fit_service()
+    band = (float(args.get("band_min", 0.5)), float(args.get("band_max", 2.4)))
+    try:
+        return fit.refine_wall_line(
+            index, start, end,
+            floor_z=args.get("floor_z"),
+            floor_plane=args.get("floor_plane"),
+            band=band,
+            corridor_m=float(args.get("corridor", 0.35)),
+            robust=bool(args.get("robust", True)),
+            seed=int(args.get("seed", 0)),
+        )
+    except fit.CaptureIndexError as error:
+        raise SceneError(f"CAPTURE_INDEX_ERROR:{error}")
+
+
+def h_propose_wall(scene_path: Path, actor: str, args: dict) -> dict:
+    # Measurement only: the refined line is returned to the Agent, never
+    # written. Writing stays with create_wall/update_node so authorship and
+    # gates keep a single path.
+    index = _open_capture_index(args)
+    proposal = _run_fit(index, args["start"], args["end"], args)
+    return {"written": False, "proposal": proposal}
+
+
+def h_refine_wall_line(scene: dict, scene_path: Path, actor: str, args: dict) -> Any:
+    wall_id = args["id"]
+    node = scene["nodes"].get(wall_id)
+    if node is None or node.get("type") != "wall":
+        raise SceneError(f"HOST_NOT_A_WALL:{wall_id}")
+    index = _open_capture_index(args)
+    refinement = _run_fit(index, node["start"], node["end"], args)
+    result: dict = {
+        "written": False,
+        "wallId": wall_id,
+        "storedCenterline": {"start": node["start"], "end": node["end"]},
+        "storedThicknessM": node.get("thickness"),
+        "refinement": refinement,
+        # The fitted line is a wall FACE; against a stored CENTERLINE the
+        # honest comparison is the paired centerline when both faces exist.
+        "faceDeviation": refinement.get("deviationFromInput"),
+    }
+    paired = refinement.get("doubleSided", {}).get("pairedCenterline")
+    if paired:
+        result["centerlineDeviation"] = load_fit_service().line_deviation(
+            node["start"], node["end"], paired["start"], paired["end"],
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +716,32 @@ TOOL_SPECS: list[dict] = [
         "dimensions, opening fit/overlap, polygon size and evidence-ledger rules. Returns the "
         "scene sha256 when clean.",
         {},
+    ),
+    tool(
+        "propose_wall", "raw", h_propose_wall,
+        "Refine a rough Agent-drawn wall line (allowed to be off by ~0.3 m and ~8 degrees) against "
+        "raw CaptureIndex points using robust RANSAC/IRLS fitting inside a structural height band. "
+        "Returns the refined start/end plus evidence: supportPointCount, inlierRatio, "
+        "residualP50M/residualP90M, double-face thickness candidates and a FIT_OK / LOW_SUPPORT / "
+        "AMBIGUOUS status with reason. NEVER writes the scene -- review the measurement, then use "
+        "create_wall to author the wall yourself.",
+        {
+            "start": dict(POINT, description="Rough wall line start [x, y] in source plan meters."),
+            "end": dict(POINT, description="Rough wall line end [x, y] in source plan meters."),
+            **FIT_PROPERTIES,
+        },
+        ["start", "end", "index"],
+    ),
+    tool(
+        "refine_wall_line", "query", h_refine_wall_line,
+        "Re-fit an EXISTING wall node's centerline against raw CaptureIndex points and return a "
+        "deviation report (face and paired-centerline deltas in meters and degrees) plus the same "
+        "fit evidence as propose_wall. Read-only: apply any correction yourself with update_node.",
+        {
+            "id": dict(NODE_ID, description="Existing wall node id to re-fit."),
+            **FIT_PROPERTIES,
+        },
+        ["id", "index"],
     ),
     tool(
         "undo", "raw", h_undo,

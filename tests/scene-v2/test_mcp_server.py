@@ -8,6 +8,7 @@ and a blocking readline on a crashed server would hang the whole suite.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import hashlib
 from datetime import datetime, timezone
@@ -18,6 +19,9 @@ import sys
 import tempfile
 import threading
 import unittest
+
+import laspy
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER = REPO_ROOT / "scene-core" / "mcp_server.py"
@@ -30,6 +34,7 @@ EXPECTED_TOOLS = {
     "add_slab", "add_ceiling", "add_zone", "add_column", "update_node", "delete_node",
     "attach_evidence", "open_issue", "apply_patch", "find_nodes",
     "measure", "get_scene_summary", "get_node", "validate_scene", "undo", "get_agent_guide",
+    "propose_wall", "refine_wall_line",
 }
 
 
@@ -353,6 +358,103 @@ class AuthoringWorkflowTest(McpServerTestCase):
         self.assertIn("wall_north", deleted)
         self.assertIn("window_n1", deleted)
         self.assertEqual(self.call_ok("get_scene_summary")["nodeCounts"], {"level": 1})
+
+
+def _load_core(name: str):
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "scene-core" / f"{name}.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _wall_capture_index(root: Path) -> Path:
+    """One double-faced wall (faces y=2.0 / y=2.2, x 0..6) as a capture index."""
+    rows: list[tuple[float, float, float]] = []
+    z_levels = np.linspace(0.55, 2.35, 14)
+    for x in np.arange(0.0, 6.0 + 1e-9, 0.05):
+        for y in (2.0, 2.2):
+            rows.extend((float(x), y, float(z)) for z in z_levels)
+    xyz = np.asarray(rows, dtype=np.float64)
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = np.asarray([0.001, 0.001, 0.001])
+    las_path = root / "wall.las"
+    las = laspy.LasData(header)
+    las.x, las.y, las.z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    las.write(las_path)
+    index_root = root / "capture-index"
+    _load_core("capture_index").build_index(las_path, index_root, tile_size_m=2.0)
+    return index_root
+
+
+class WallFitToolsTest(McpServerTestCase):
+    """propose_wall / refine_wall_line measure against raw points, never write."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.fixture_temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.fixture_temp.cleanup)
+        cls.index_root = _wall_capture_index(Path(cls.fixture_temp.name))
+
+    def test_propose_wall_refines_rough_line_without_touching_the_scene(self):
+        self.handshake()
+        result = self.call_ok("propose_wall", {
+            "index": str(self.index_root),
+            "start": [0.4, 2.33], "end": [5.6, 2.33],
+            "floor_z": 0.0,
+        })
+        self.assertFalse(result["written"])
+        proposal = result["proposal"]
+        self.assertEqual(proposal["status"], "FIT_OK", proposal.get("reason"))
+        nearest_face = min(abs(proposal["start"][1] - 2.0), abs(proposal["start"][1] - 2.2))
+        self.assertLess(nearest_face, 0.05)
+        self.assertTrue(proposal["doubleSided"]["detected"])
+        self.assertAlmostEqual(proposal["doubleSided"]["thicknessM"], 0.2, delta=0.04)
+        # Measurement only: no scene file may appear as a side effect.
+        self.assertFalse(self.scene_path.exists())
+
+    def test_refine_wall_line_reports_deviation_and_leaves_disk_untouched(self):
+        self.handshake()
+        self.call_ok("init_scene", {"dataset": "mcp-fit-001"})
+        self.call_ok("create_wall", {
+            "id": "wall_a", "start": [0.2, 2.1], "end": [5.8, 2.1], "thickness": 0.2,
+        })
+        before = self.scene_path.read_bytes()
+        result = self.call_ok("refine_wall_line", {
+            "id": "wall_a", "index": str(self.index_root), "floor_z": 0.0,
+        })
+        self.assertFalse(result["written"])
+        self.assertEqual(result["wallId"], "wall_a")
+        self.assertEqual(result["refinement"]["status"], "FIT_OK")
+        # Stored centerline 2.1 sits between the faces: the paired-centerline
+        # deviation must be near zero even though the face deviation is ~0.1.
+        self.assertLess(abs(result["centerlineDeviation"]["midLateralM"]), 0.05)
+        self.assertAlmostEqual(abs(result["faceDeviation"]["midLateralM"]), 0.1, delta=0.05)
+        self.assertEqual(self.scene_path.read_bytes(), before)
+
+    def test_refine_wall_line_rejects_a_missing_wall(self):
+        self.handshake()
+        self.call_ok("init_scene", {"dataset": "mcp-fit-002"})
+        payload, is_error = self.call_tool("refine_wall_line", {
+            "id": "not_a_wall", "index": str(self.index_root), "floor_z": 0.0,
+        })
+        self.assertTrue(is_error)
+        self.assertIn("HOST_NOT_A_WALL", payload["message"])
+
+    def test_propose_wall_surfaces_capture_index_errors(self):
+        self.handshake()
+        payload, is_error = self.call_tool("propose_wall", {
+            "index": str(self.root / "no-such-index"),
+            "start": [0.0, 0.0], "end": [5.0, 0.0],
+            "floor_z": 0.0,
+        })
+        self.assertTrue(is_error)
+        self.assertIn("CAPTURE_INDEX_ERROR", payload["message"])
+        self.assertFalse(self.scene_path.exists())
 
 
 if __name__ == "__main__":
