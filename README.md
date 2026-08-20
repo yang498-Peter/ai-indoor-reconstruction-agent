@@ -40,6 +40,19 @@ python .\.codex\skills\reconstruct-indoor-scene\scripts\discover_capture.py `
 `scene-core\capture_readiness.py validate-pose` 对 V2 CaptureIndex 做空间对齐，才能启用
 posed-photo association。
 
+场景 authority 完成后，用二维墙面指标和反向结构遗漏审计做硬门：
+
+```powershell
+python scene-core\geometry_workflow.py evaluate `
+  --scene '.\outputs\capture-001\scene-authority.json' `
+  --workspace '.\outputs\capture-001\geometry' `
+  --output '.\outputs\capture-001\pointcloud-scene-metrics-v2.json'
+```
+
+V2 报告按墙输出 `(s,h)` 面积覆盖、真实最长连续无支撑段、门窗垂向 mask、
+有符号表面残差/异常点和玻璃弱回波 profile，并从高结构点反查当前 Scene 未解释的墙段。
+`accepted-measured` 墙只要返回 `REVIEW`，或 point→model 审计不是 `PASS`，场景级结果就会阻断。
+
 浏览器打开：
 
 `http://127.0.0.1:8765/prototypes/litereality-three-redraw-20260812/viewer.html`

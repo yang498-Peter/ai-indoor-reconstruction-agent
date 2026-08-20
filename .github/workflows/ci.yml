@@ -37,6 +37,7 @@ jobs:
       - run: python tests/scene-v2/test_scene_api.py
       - run: python tests/scene-v2/test_geometry_pipeline.py
       - run: python tests/scene-v2/test_geometry_workflow.py
+      - run: python tests/scene-v2/test_wall_metrics_v2.py
       - run: python tests/scene-v2/test_mcp_server.py
       - run: python tests/scene-v2/test_static_renderers_v2.py
       - run: python tests/scene-v2/test_structural_omission_audit.py

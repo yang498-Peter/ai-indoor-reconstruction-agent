@@ -140,6 +140,20 @@ python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py sta
 
 ## V2 评估与发布
 
+墙体点云硬门使用 `pointcloud-scene-metrics-v2`，不是旧的一维“有点/没点”统计：
+
+- 每面墙转换为局部 `(s,h,d)`，其中 `d` 是到最近预测墙面的有符号残差；
+- 实体区域构成二维 expected mask，门只排除地面到门头，窗只排除窗台到窗头，窗下墙和窗楣仍必须有支持；
+- `maxUnsupportedRunM` 是实际最长连续无支撑区间，`unsupportedLengthM` 仅保留为总量辅助字段；
+- `coverageAreaRatio`、`verticalCoverageRatio`、端点支持、双面支持和未截断的 P50/P90/P99/异常点比例共同决定 `PASS/REVIEW/FAIL`；
+- 玻璃使用显式 `glass-weak-return-v1` profile，允许单面弱回波，但不会把低阈值静默套到实体墙；
+- point→model 审计用低/中/高三带持续回波寻找任何 accepted 墙/柱都无法解释的结构面积和最长墙段，家具不提供豁免；
+- 已测墙的 `REVIEW`、反向遗漏 `REVIEW/FAIL/NOT_RUN` 都会阻断场景级 `PASS`。
+
+报告绑定 Scene 字节 SHA-256、CaptureIndex manifest SHA-256/index fingerprint、阈值 config digest、
+生成器代码 hash/Git SHA 和源数据 lineage，写入采用临时文件加原子替换。Schema 位于
+`schemas/pointcloud-scene-metrics-v2.schema.json`。
+
 ```powershell
 python scene-core\quality_report_v2.py --scene work\scene-authority.json --review work\review-receipt.json --output work\quality-report.json
 python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py publish --state work\pipeline-state.json --actor publish-gate --execution work\publisher-identity.json --scene work\scene-authority.json --review work\review-receipt.json --quality-report work\quality-report.json --output work\publish
