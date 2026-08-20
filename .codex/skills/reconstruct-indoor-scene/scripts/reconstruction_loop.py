@@ -25,6 +25,7 @@ if str(SCENE_CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(SCENE_CORE_ROOT))
 
 import execution_identity as execution_identity_api  # noqa: E402
+import publish_bundle_v2  # noqa: E402
 
 PIPELINE_CONTRACT_PATH = REPOSITORY_ROOT / "schemas" / "pipeline-contract-v2.json"
 PIPELINE_CONTRACT = json.loads(PIPELINE_CONTRACT_PATH.read_text(encoding="utf-8"))
@@ -48,7 +49,7 @@ EVALUATOR_VERSIONS = {
     "evaluate_presentation_review": "2",
     "evaluate_regional_review": "2",
     "evaluate_global_review": "2",
-    "publish_v2": "1",
+    "publish_v2": "2",
 }
 STAGE_STATES = {"PENDING", "IN_PROGRESS", "REVIEW", "PASS", "BLOCKED", "FAILED"}
 CAPABILITY_STATES = {"UNVERIFIED", "AVAILABLE", "DEGRADED", "BLOCKED"}
@@ -2275,40 +2276,25 @@ def command_publish(args: argparse.Namespace) -> None:
     geometry_digest = quality_report.get("geometryDigest")
     if not isinstance(geometry_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", geometry_digest):
         raise WorkflowError("quality report has no valid geometryDigest")
-    publish_dir = args.output.resolve() / geometry_digest[:16]
-    if publish_dir.exists():
-        raise WorkflowError(f"immutable publish directory already exists: {publish_dir}")
-    publish_dir.mkdir(parents=True)
-    files = {}
-    for name, source in (
-        ("scene-authority.json", args.scene),
-        ("review-receipt.json", args.review),
-        ("quality-report.json", quality_report_path),
-    ):
-        destination = publish_dir / name
-        shutil.copyfile(source.resolve(), destination)
-        files[name] = artifact(destination)
-    manifest = {
-        "schemaVersion": "2.0",
-        "publishedAt": now_iso(),
-        "publisher": publisher_identity,
-        "jobId": state.get("jobId"),
-        "captureFingerprint": state.get("captureFingerprint"),
-        "geometryDigest": geometry_digest,
-        "artifactSha256": scene["sha256"],
-        "evidenceSetDigest": quality_report.get("evidenceSetDigest"),
-        "configDigest": quality_report.get("configDigest"),
-        "publishScope": scope,
-        "scopeBlockedCapabilities": scope_blocked_capabilities,
-        "capabilityDegradations": collect_capability_degradations(
-            state, publish_capability_degradations
-        ),
-        "files": files,
-    }
-    write_json_atomic(publish_dir / "publish-manifest.json", manifest)
-    for published_file in publish_dir.iterdir():
-        if published_file.is_file():
-            os.chmod(published_file, 0o444)
+    try:
+        bundle_specs = publish_bundle_v2.parse_bundle_specs(
+            getattr(args, "bundle_file", None) or []
+        )
+        publish_dir, manifest = publish_bundle_v2.create_bundle(
+            args.output,
+            args.scene,
+            args.review,
+            quality_report_path,
+            state,
+            publisher_identity,
+            bundle_specs,
+            scope,
+            scope_blocked_capabilities,
+            collect_capability_degradations(state, publish_capability_degradations),
+        )
+    except publish_bundle_v2.PublishBundleError as error:
+        raise WorkflowError(error.message, error.code) from error
+    bundle_digest = manifest["bundleDigest"]
     stage = state["stages"]["publish"]
     stage.update(
         {
@@ -2328,6 +2314,8 @@ def command_publish(args: argparse.Namespace) -> None:
                 "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
                 "result": "PASS",
                 "geometryDigest": geometry_digest,
+                "bundleDigest": bundle_digest,
+                "postPublishRevalidation": "PASS",
                 "publishScope": scope,
             },
             "capabilityDegradations": publish_capability_degradations,
@@ -2340,6 +2328,7 @@ def command_publish(args: argparse.Namespace) -> None:
         {
             "directory": str(publish_dir),
             "geometryDigest": geometry_digest,
+            "bundleDigest": bundle_digest,
             "artifactSha256": scene["sha256"],
             "publishScope": scope,
         },
@@ -2355,12 +2344,11 @@ def command_status(args: argparse.Namespace) -> None:
         manifests = published.get("artifacts", [])
         manifest_path = Path(str(manifests[0].get("path", ""))).resolve() if manifests else None
         valid = bool(manifest_path and manifest_path.is_file())
-        manifest = load_json(manifest_path) if valid else {}
-        for item in manifest.get("files", {}).values() if isinstance(manifest, dict) else []:
-            path = Path(str(item.get("path", ""))).resolve() if isinstance(item, dict) else None
-            if not path or not path.is_file() or sha256_file(path) != item.get("sha256"):
+        if valid:
+            try:
+                publish_bundle_v2.verify_bundle(manifest_path.parent)
+            except publish_bundle_v2.PublishBundleError:
                 valid = False
-                break
         if not valid:
             published.update(
                 {"status": "FAILED", "updatedAt": now_iso(), "actor": "pipeline", "note": "published snapshot was modified"}
@@ -2530,6 +2518,12 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--scene", required=True, type=Path)
     publish.add_argument("--review", required=True, type=Path)
     publish.add_argument("--quality-report", required=True, type=Path)
+    publish.add_argument(
+        "--bundle-file",
+        action="append",
+        default=[],
+        help="self-contained publish input as evidence=PATH, render=PATH, or provenance=PATH",
+    )
     publish.add_argument("--output", required=True, type=Path)
     publish.add_argument("--note", default="")
     return parser

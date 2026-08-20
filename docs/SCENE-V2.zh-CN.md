@@ -175,11 +175,23 @@ python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py sta
 
 ```powershell
 python scene-core\quality_report_v2.py --scene work\scene-authority.json --review work\review-receipt.json --output work\quality-report.json
-python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py publish --state work\pipeline-state.json --actor publish-gate --execution work\publisher-identity.json --scene work\scene-authority.json --review work\review-receipt.json --quality-report work\quality-report.json --output work\publish
+python .codex\skills\reconstruct-indoor-scene\scripts\reconstruction_loop.py publish `
+  --state work\pipeline-state.json --actor publish-gate --execution work\publisher-identity.json `
+  --scene work\scene-authority.json --review work\review-receipt.json `
+  --quality-report work\quality-report.json --bundle-file render=work\renders\global-review.png `
+  --output work\publish
+python scene-core\publish_bundle_v2.py --bundle work\publish\<64位bundleDigest>
 ```
 
 - `geometryDigest` 只绑定稳定的权威几何；`evidenceSetDigest` 单独绑定证据账本；`artifactSha256` 绑定场景文件字节；
-- 发布会重新运行同一 V2 evaluator，并逐字段比较报告；
+- `blockingChecks` 是逐项 `PASS/FAIL` 的硬门向量；报告总状态只能由全部 blocking check 的状态决定；
+- 发布会重新运行同一 V2 evaluator，并逐字段比较报告；缺少最终 render 时稳定返回 `PUBLISH_RENDER_REQUIRED`；
+- 包自动收集 Scene 引用的证据/receipt、resolved issue 的 review evidence，并生成去绝对路径的 pipeline provenance；
+  额外证据、渲染或 provenance 使用重复的 `--bundle-file role=PATH` 显式加入；
+- 发布先在同卷 staging 目录复制并核对 SHA-256/大小，随后原子 rename 到完整 64 位 `bundleDigest`
+  目录，再执行一次发布后重验。manifest 只保存包内相对路径，移动整个目录后仍可独立验证；
+- `bundleDigest` 绑定文件向量、publisher、scope、能力降级和发布时间；修改 render、evidence、scope 或
+  manifest 元数据都会导致校验失败；
 - V1 输入稳定返回 `LEGACY_SCENE_REQUIRES_MIGRATION`，必须先显式迁移；
 - 旧评分器已移至 `scripts/legacy/score_scene_v1.py`，只保留历史样例兼容入口，不再参与 V2 发布。
 

@@ -71,6 +71,12 @@
 - reviewer、reviewedAt、证据文件存在性；
 - 所有 blocking quality loop 为 PASS。
 
+`quality-report-v2` 还必须输出稳定的 `blockingChecks` 向量，任何一项 `FAIL` 都不能被总分覆盖。
+最终发布包必须包含 authority、review、quality、evidence、render 和 provenance 六类内容；manifest
+只允许包内相对路径，目录名使用完整 `bundleDigest`。发布器在 staging 和原子 rename 后各重验一次，
+包被移动后仍可用 `scene-core/publish_bundle_v2.py --bundle <目录>` 独立校验。缺少 render、路径逃逸、
+文件/manifest 篡改和已存在的相同内容地址都保持 fail-closed。
+
 展示模型还必须通过首眼视觉拒绝门：空间数不能为 0；主要视觉地面不能无解释断开；主要墙不能悬空；不能被黑洞和孤立墙主导；主体必须占审核画面至少 65%；默认列表不得暴露零件 ID；逻辑家具必须折叠分组；交付页不得仍标 `EVIDENCE_ONLY`；首次观看者应能立即理解主要空间、通道和家具分区。
 
 详细字段与命令以 `.codex/skills/reconstruct-indoor-scene/SKILL.md` 为准。

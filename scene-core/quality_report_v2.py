@@ -12,8 +12,11 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
+import re
 import sys
+import tempfile
 from typing import Any
 
 
@@ -113,11 +116,37 @@ def _review_area_scores(review: dict[str, Any]) -> tuple[list[tuple[str, int]], 
     return parsed, total
 
 
-def _resolve_source(scene_path: Path, source_path: str) -> Path:
-    local = (scene_path.parent / source_path).resolve()
-    if local.is_file():
-        return local
-    return (scene_path.parent.parent / source_path).resolve()
+def _blocking_check(
+    check_id: str,
+    passed: bool,
+    failure_code: str,
+    observed: bool | int | str | None,
+    expectation: str,
+) -> dict[str, Any]:
+    return {
+        "id": check_id,
+        "status": "PASS" if passed else "FAIL",
+        "failureCode": None if passed else failure_code,
+        "observed": observed,
+        "expectation": expectation,
+    }
+
+
+def _resolve_source(scene_path: Path, source_path: str) -> Path | None:
+    normalized = source_path.replace("\\", "/")
+    relative = Path(*PurePosixPath(normalized).parts)
+    if (
+        relative.is_absolute()
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:/", normalized)
+        or ".." in PurePosixPath(normalized).parts
+    ):
+        return None
+    for base in (scene_path.parent, scene_path.parent.parent):
+        candidate = (base / relative).resolve()
+        if (candidate == base.resolve() or base.resolve() in candidate.parents) and candidate.is_file():
+            return candidate
+    return (scene_path.parent / relative).resolve()
 
 
 def _evidence_file_errors(scene: dict[str, Any], scene_path: Path) -> list[str]:
@@ -142,7 +171,13 @@ def _evidence_file_errors(scene: dict[str, Any], scene_path: Path) -> list[str]:
                 continue
             if not source_path:
                 continue
+            if not isinstance(source_path, str):
+                errors.append(f"EVIDENCE_SOURCE_PATH_INVALID:{node_id}:{index}")
+                continue
             resolved = _resolve_source(scene_path, source_path)
+            if resolved is None:
+                errors.append(f"EVIDENCE_PATH_ESCAPE:{node_id}:{index}")
+                continue
             if not resolved.is_file():
                 errors.append(f"EVIDENCE_FILE_MISSING:{node_id}:{index}")
                 continue
@@ -350,11 +385,67 @@ def evaluate_scene(
         "reviewTotalScore": review_total_score,
         "reviewScoreGate": review_score_gate,
     }
+    blocking_checks = [
+        _blocking_check("scene-v2-valid", scene_valid, "SCENE_V2_INVALID", scene_valid, "true"),
+        _blocking_check(
+            "authority-layer", authority_layer_valid, "SCENE_LAYER_NOT_AUTHORITY",
+            scene.get("sceneLayer", "authority"), "authority",
+        ),
+        _blocking_check(
+            "evidence-resolved", len(unresolved) == 0, "UNRESOLVED_EVIDENCE",
+            len(unresolved), "0 unresolved nodes",
+        ),
+        _blocking_check(
+            "declared-space", declared_space, "DECLARED_SPACE_REQUIRED",
+            len(spaces) if isinstance(spaces, list) else 0, "at least 1 declared space",
+        ),
+        _blocking_check(
+            "blocking-issues", len(blocking_issues) == 0, "BLOCKING_ISSUES",
+            len(blocking_issues), "0 unresolved P0/P1 issues",
+        ),
+        _blocking_check(
+            "evidence-files", not evidence_file_errors, "EVIDENCE_FILES_INVALID",
+            len(evidence_file_errors), "all accepted evidence bytes and provenance are current",
+        ),
+        _blocking_check(
+            "claims-current", claims_current, "ACCEPTED_CLAIMS_STALE",
+            claims_current, "true",
+        ),
+        _blocking_check(
+            "source-digests-current", accepted_source_digests_current,
+            "ACCEPTED_SOURCE_DIGESTS_STALE", accepted_source_digests_current, "true",
+        ),
+        _blocking_check(
+            "evidence-lineages-distinct", evidence_lineages_distinct,
+            "EVIDENCE_LINEAGES_NOT_DISTINCT", evidence_lineages_distinct, "true",
+        ),
+        _blocking_check(
+            "review-identity", review_identity_valid, "REVIEW_IDENTITY_INVALID",
+            review_identity_valid, "valid read-only review identity",
+        ),
+        _blocking_check(
+            "review-independence", review_identity_independent,
+            "REVIEW_IDENTITY_NOT_INDEPENDENT", review_identity_independent, "true",
+        ),
+        _blocking_check(
+            "review-binding", review_binding_valid, "REVIEW_BINDING_STALE",
+            review_binding_valid, "current geometry, evidence, and artifact digests",
+        ),
+        _blocking_check(
+            "review-findings", no_review_findings, "REVIEW_HAS_BLOCKING_FINDINGS",
+            no_review_findings, "no P0/P1 findings",
+        ),
+        _blocking_check(
+            "review-score", review_score_gate,
+            "REVIEW_SCORE_MISSING_OR_BELOW_GATE", review_total_score,
+            "every area >= 85 and total >= 90",
+        ),
+    ]
     return {
         "schemaVersion": REPORT_SCHEMA_VERSION,
         "artifactType": "quality-report-v2",
         "sceneSchemaVersion": scene.get("schemaVersion"),
-        "status": "PASS" if not errors else "FAIL",
+        "status": "PASS" if all(item["status"] == "PASS" for item in blocking_checks) else "FAIL",
         "geometryDigest": geometry_digest,
         "artifactSha256": artifact_sha256,
         "evidenceSetDigest": evidence_digest,
@@ -364,6 +455,7 @@ def evaluate_scene(
             "codeSha256": _sha256_bytes(Path(__file__).read_bytes()),
         },
         "checks": checks,
+        "blockingChecks": blocking_checks,
         "errors": errors,
     }
 
@@ -378,12 +470,20 @@ def evaluate_files(scene_path: Path, review_path: Path) -> dict[str, Any]:
 
 def write_json_atomic(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
     )
-    temporary.replace(path)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def main() -> int:

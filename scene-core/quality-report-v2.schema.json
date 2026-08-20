@@ -15,6 +15,7 @@
     "configDigest",
     "producer",
     "checks",
+    "blockingChecks",
     "errors"
   ],
   "properties": {
@@ -87,6 +88,22 @@
           ]
         },
         "reviewScoreGate": {"type": "boolean"}
+      }
+    },
+    "blockingChecks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "failureCode", "observed", "expectation"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+          "status": {"enum": ["PASS", "FAIL"]},
+          "failureCode": {"type": ["string", "null"]},
+          "observed": {"type": ["boolean", "integer", "number", "string", "null"]},
+          "expectation": {"type": "string", "minLength": 1}
+        }
       }
     },
     "errors": {"type": "array", "items": {"type": "string"}}
