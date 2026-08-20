@@ -41,8 +41,9 @@ def estimate_levels(
         point_count = int(reader.header.point_count)
         min_z = float(reader.header.mins[2])
         max_z = float(reader.header.maxs[2])
-        if not math.isfinite(min_z) or not math.isfinite(max_z) or max_z - min_z < min_height_m:
-            raise ValueError("LAS Z bounds cannot contain a valid indoor level")
+        # Unreadable geometry stays fail-closed; only weak-but-real evidence degrades.
+        if not math.isfinite(min_z) or not math.isfinite(max_z) or max_z <= min_z:
+            raise ValueError("LAS Z bounds are not finite or have no vertical extent")
         stride = max(1, int(math.ceil(point_count / max_points)))
         counts = np.zeros(max(2, int(math.ceil((max_z - min_z) / bin_size_m)) + 1), dtype=np.int64)
         sampled = 0
@@ -51,33 +52,62 @@ def estimate_levels(
             indices = np.clip(((z - min_z) / bin_size_m).astype(np.int64), 0, len(counts) - 1)
             np.add.at(counts, indices, 1)
             sampled += len(indices)
+    if sampled == 0:
+        raise ValueError("LAS contains no sample points for level estimation")
 
     kernel = np.asarray([1, 2, 3, 2, 1], dtype=np.float64)
     smooth = np.convolve(counts.astype(np.float64), kernel / kernel.sum(), mode="same")
     span = max_z - min_z
+    degradation_reasons: list[str] = []
+    if span < min_height_m:
+        degradation_reasons.append(
+            f"Z span {span:.3f} m is below the minimum indoor level height {min_height_m:.3f} m"
+        )
+
+    cumulative = np.cumsum(smooth)
+    total = float(cumulative[-1])
+
+    def quantile_z(fraction: float) -> float:
+        index = int(np.searchsorted(cumulative, fraction * total))
+        index = min(max(index, 0), len(smooth) - 1)
+        return min_z + (index + 0.5) * bin_size_m
+
     floor_peaks = _peaks(smooth, int(0.01 * span / bin_size_m), int(min(0.48 * span, max_height_m * 0.5) / bin_size_m))
-    if not floor_peaks:
-        raise ValueError("no stable lower horizontal peak was found")
-    floor_index = max(floor_peaks, key=lambda index: smooth[index])
-    floor_z = min_z + (floor_index + 0.5) * bin_size_m
+    if floor_peaks:
+        floor_index = max(floor_peaks, key=lambda index: smooth[index])
+        floor_z = min_z + (floor_index + 0.5) * bin_size_m
+        floor_source = "histogram-peak"
+    else:
+        floor_index = None
+        floor_z = quantile_z(0.02)
+        floor_source = "quantile-fallback"
+        degradation_reasons.append("no stable lower horizontal peak; floorZ is the 2% Z quantile best guess")
     ceiling_peaks = _peaks(
         smooth,
         int((floor_z + min_height_m - min_z) / bin_size_m),
         int((min(floor_z + max_height_m, max_z) - min_z) / bin_size_m),
     )
-    if not ceiling_peaks:
-        raise ValueError("no stable ceiling-height peak was found")
 
     def ceiling_score(index: int) -> float:
         height = min_z + (index + 0.5) * bin_size_m - floor_z
         return float(smooth[index]) * (1.15 if 2.4 <= height <= 3.4 else 1.0)
 
-    ceiling_index = max(ceiling_peaks, key=ceiling_score)
-    ceiling_z = min_z + (ceiling_index + 0.5) * bin_size_m
+    if ceiling_peaks:
+        ceiling_index = max(ceiling_peaks, key=ceiling_score)
+        ceiling_z = min_z + (ceiling_index + 0.5) * bin_size_m
+        ceiling_source = "histogram-peak"
+    else:
+        ceiling_index = None
+        ceiling_z = quantile_z(0.98)
+        ceiling_source = "quantile-fallback"
+        degradation_reasons.append("no stable ceiling-height peak; ceilingZ is the 98% Z quantile best guess")
     if not min_height_m <= ceiling_z - floor_z <= max_height_m:
-        raise ValueError("selected floor/ceiling separation is outside the configured indoor range")
+        degradation_reasons.append(
+            f"floor/ceiling separation {ceiling_z - floor_z:.3f} m is outside the configured "
+            f"{min_height_m:.2f}-{max_height_m:.2f} m indoor range"
+        )
 
-    def alternatives(indices: list[int], selected: int) -> list[dict[str, object]]:
+    def alternatives(indices: list[int], selected: int | None) -> list[dict[str, object]]:
         return [
             {
                 "z": round(min_z + (index + 0.5) * bin_size_m, 5),
@@ -90,7 +120,7 @@ def estimate_levels(
     return {
         "schemaVersion": 1,
         "kind": "raw-las-level-estimation",
-        "status": "REVIEW_REQUIRED",
+        "status": "DEGRADED" if degradation_reasons else "REVIEW_REQUIRED",
         "source": str(source),
         "inputPointCount": point_count,
         "sampledPointCount": sampled,
@@ -99,10 +129,13 @@ def estimate_levels(
         "binSizeM": bin_size_m,
         "floorZ": round(floor_z, 5),
         "ceilingZ": round(ceiling_z, 5),
+        "floorSource": floor_source,
+        "ceilingSource": ceiling_source,
         "levelHeightM": round(ceiling_z - floor_z, 5),
         "uncertaintyM": round(bin_size_m * 2.0, 5),
         "floorAlternatives": alternatives(floor_peaks, floor_index),
         "ceilingAlternatives": alternatives(ceiling_peaks, ceiling_index),
+        "degradationReasons": degradation_reasons,
         "authorityRule": "raw histogram proposal; an Agent must inspect unannotated evidence before acceptance",
     }
 

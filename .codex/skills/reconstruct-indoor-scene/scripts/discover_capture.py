@@ -192,6 +192,42 @@ def build_manifest(
     normalized_frame, coordinate_errors = normalize_coordinate_frame(coordinate_frame)
     pose_entries = groups["posesAndTransforms"]
     pose_validation = validate_pose_sources(root, pose_entries)
+
+    all_entries = [entries_by_path[path] for path in paths]
+    if len(units) == 1:
+        selected_counts = units[0]["counts"]
+        adapter_value = units[0]["pointCloudAdapter"]
+        # Whole-scene geometry acceptance depends only on geometric evidence:
+        # a supported point cloud in a declared frame is indexable, so the
+        # capability tracks geometry readiness instead of being always blocked.
+        geometry_ready = (
+            units[0]["primaryPointCloud"] is not None
+            and isinstance(adapter_value, dict)
+            and adapter_value["status"] == "SUPPORTED"
+            and normalized_frame is not None
+        )
+        blocked_capabilities = [
+            capability
+            for capability, blocked in (
+                ("material-acceptance", int(selected_counts["images"]) == 0),  # type: ignore[index]
+                (
+                    "posed-photo-association",
+                    pose_validation.get("status") != "PASS",
+                ),
+                ("coordinate-frame", normalized_frame is None),
+                ("whole-scene-acceptance", not geometry_ready),
+            )
+            if blocked
+        ]
+    else:
+        blocked_capabilities = [
+            "capture-selection",
+            "geometry-modeling",
+            "material-acceptance",
+            "posed-photo-association",
+            "whole-scene-acceptance",
+        ]
+
     warnings: list[str] = []
     if not point_clouds:
         state = "BLOCKED_NO_POINT_CLOUD"
@@ -211,37 +247,15 @@ def build_manifest(
         state = "BLOCKED_COORDINATE_FRAME_REQUIRED"
         warnings.extend(coordinate_errors)
     else:
-        state = "READY_GEOMETRY_ONLY"
+        # READY_FULL is only reachable when no capability stays blocked; a
+        # discovery-time pose report tops out at ALIGNMENT_REQUIRED, so full
+        # readiness normally arrives later through revalidate-intake.
+        state = "READY_FULL" if not blocked_capabilities else "READY_GEOMETRY_ONLY"
         warnings.extend(units[0]["warnings"])  # type: ignore[arg-type]
         if pose_validation["status"] == "ALIGNMENT_REQUIRED":
             warnings.append("Pose format and image bindings pass; point-cloud alignment remains required.")
         elif pose_validation["status"] == "FAIL":
             warnings.append("Pose evidence failed format, coordinate-convention, or image-binding validation.")
-
-    all_entries = [entries_by_path[path] for path in paths]
-    if len(units) == 1:
-        selected_counts = units[0]["counts"]
-        blocked_capabilities = [
-            capability
-            for capability, blocked in (
-                ("material-acceptance", int(selected_counts["images"]) == 0),  # type: ignore[index]
-                (
-                    "posed-photo-association",
-                    pose_validation.get("status") != "PASS",
-                ),
-                ("coordinate-frame", normalized_frame is None),
-                ("whole-scene-acceptance", True),
-            )
-            if blocked
-        ]
-    else:
-        blocked_capabilities = [
-            "capture-selection",
-            "geometry-modeling",
-            "material-acceptance",
-            "posed-photo-association",
-            "whole-scene-acceptance",
-        ]
 
     manifest: dict[str, object] = {
         "schemaVersion": 3,
@@ -257,7 +271,9 @@ def build_manifest(
         "blockedCapabilities": blocked_capabilities,
         "sceneDomainGate": "MANUAL_REVIEW_REQUIRED",
         "photoPoseAssociationGate": (
-            "BLOCKED_ALIGNMENT_NOT_RUN"
+            "PASS"
+            if pose_validation["status"] == "PASS"
+            else "BLOCKED_ALIGNMENT_NOT_RUN"
             if pose_validation["status"] == "ALIGNMENT_REQUIRED"
             else "BLOCKED_POSE_VALIDATION_FAILED"
             if pose_validation["status"] == "FAIL"

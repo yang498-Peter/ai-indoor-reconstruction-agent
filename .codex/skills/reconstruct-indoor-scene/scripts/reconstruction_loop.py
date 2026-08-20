@@ -364,6 +364,7 @@ def blank_stage(stage_name: str) -> dict[str, Any]:
         "evaluation": None,
         "executionRunId": None,
         "identityDigest": None,
+        "capabilityDegradations": [],
     }
 
 
@@ -614,14 +615,52 @@ def apply_change_invalidation(state: dict[str, Any], change: str, reason: str) -
         reset_stage(state, name, "PENDING", reason)
 
 
-def require_capabilities(state: dict[str, Any], stage_name: str) -> None:
-    missing = [
-        name
-        for name in STAGE_REQUIREMENTS.get(stage_name, ())
-        if state.get("capabilities", {}).get(name, {}).get("status") != "AVAILABLE"
-    ]
+def require_capabilities(state: dict[str, Any], stage_name: str) -> list[dict[str, str]]:
+    """Gate a stage on its capabilities; DEGRADED passes only with a recorded reason."""
+    missing: list[str] = []
+    degraded: list[dict[str, str]] = []
+    for name in STAGE_REQUIREMENTS.get(stage_name, ()):
+        record = state.get("capabilities", {}).get(name, {})
+        status = record.get("status")
+        if status == "AVAILABLE":
+            continue
+        reason = str(record.get("reason", "") or "").strip()
+        if status == "DEGRADED" and reason:
+            degraded.append({"capability": name, "degradationReason": reason})
+            continue
+        missing.append(name)
     if missing:
-        raise WorkflowError(f"stage {stage_name} lacks AVAILABLE capabilities: {', '.join(missing)}")
+        raise WorkflowError(
+            f"stage {stage_name} lacks AVAILABLE or reasoned DEGRADED capabilities: {', '.join(missing)}"
+        )
+    return degraded
+
+
+def collect_capability_degradations(
+    state: dict[str, Any], publish_degradations: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    collected: list[dict[str, str]] = []
+    for name in STAGE_ORDER:
+        for item in state["stages"][name].get("capabilityDegradations") or []:
+            entry = {"stage": name, **item}
+            if entry not in collected:
+                collected.append(entry)
+    for item in publish_degradations:
+        entry = {"stage": "publish", **item}
+        if entry not in collected:
+            collected.append(entry)
+    return collected
+
+
+def publish_scope(blocked: set[str]) -> tuple[str, list[str]]:
+    """Decide the publish scope from job-level blocked capabilities, fail-closed."""
+    if "whole-scene-acceptance" in blocked:
+        raise WorkflowError(
+            "job lacks whole-scene geometry acceptance; publication remains blocked",
+            "PUBLISH_WHOLE_SCENE_BLOCKED",
+        )
+    pending = sorted(blocked.intersection({"material-acceptance", "posed-photo-association"}))
+    return ("geometry-only" if pending else "full"), pending
 
 
 def require_prerequisites(state: dict[str, Any], stage_name: str) -> None:
@@ -1046,7 +1085,7 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
         scene_sha,
     )
     require_prerequisites(state, args.name)
-    require_capabilities(state, args.name)
+    capability_degradations = require_capabilities(state, args.name)
     if stage_spec["sceneBinding"] == "authority" and scene_item is None:
         raise WorkflowError(
             f"stage {args.name} requires --scene bound to Semantic Scene V2 authority",
@@ -1158,6 +1197,7 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
                 execution_identity_api.identity_digest(reviewer_identity)
                 if reviewer_identity else None
             ),
+            "capabilityDegradations": capability_degradations,
         }
     )
     event(
@@ -1169,6 +1209,7 @@ def command_evaluate_stage(args: argparse.Namespace) -> None:
             "result": "PASS",
             "sceneSha256": scene_sha,
             "artifactSetDigest": artifact_set_digest,
+            "capabilityDegradations": capability_degradations,
         },
     )
     save_state(args.state, state)
@@ -1470,13 +1511,125 @@ def command_invalidate(args: argparse.Namespace) -> None:
     save_state(args.state, state)
 
 
+def command_revalidate_intake(args: argparse.Namespace) -> None:
+    """Upgrade job capabilities from a PASS pose-validation artifact.
+
+    job.json is hash-locked into the pipeline state, so this is the only legal
+    path that rewrites both documents together: job.blockedCapabilities loses
+    posed-photo-association, state.jobSha256 follows, and the upgrade evidence
+    (artifact sha256) is recorded for audit.
+    """
+    state = read_state(args.state)
+    identity = bind_execution(
+        state, getattr(args, "execution", None), "pipeline:update-stage", {"author"}, args.actor,
+    )
+    report_path = args.pose_validation.resolve()
+    report = load_json(report_path)
+    checks = report.get("checks") if isinstance(report, dict) else None
+    if (
+        not isinstance(report, dict)
+        or report.get("schemaVersion") != "1.0"
+        or report.get("artifactType") != "pose-validation"
+        or report.get("status") != "PASS"
+        or not isinstance(checks, dict)
+        or any(
+            checks.get(name) != "PASS"
+            for name in ("format", "coordinateConvention", "imageBindings", "pointCloudAlignment")
+        )
+    ):
+        raise WorkflowError(
+            "capability upgrade requires a pose-validation artifact with status PASS and every check PASS",
+            "INTAKE_REVALIDATION_ARTIFACT_INVALID",
+            ["run scene-core/capture_readiness.py validate-pose and retry with its PASS output"],
+        )
+    if not any(
+        isinstance(item, dict)
+        and item.get("artifactType") == "capture-manifest"
+        and item.get("payloadDigest") == state.get("captureFingerprint")
+        for item in report.get("inputs", [])
+    ):
+        raise WorkflowError(
+            "pose-validation artifact is not bound to this job's capture fingerprint",
+            "INTAKE_REVALIDATION_ARTIFACT_UNBOUND",
+        )
+    report_item = artifact(report_path, "tool")
+    report_item["artifactType"] = "pose-validation"
+
+    job_path = Path(str(state["job"])).resolve()
+    previous_job_sha = str(state.get("jobSha256"))
+    job = load_json(job_path)
+    blocked = list(job.get("blockedCapabilities", []))
+    if "posed-photo-association" not in blocked:
+        raise WorkflowError(
+            "job does not block posed-photo-association; there is nothing to revalidate",
+            "INTAKE_REVALIDATION_NOT_REQUIRED",
+        )
+    job["blockedCapabilities"] = [name for name in blocked if name != "posed-photo-association"]
+    if not job["blockedCapabilities"] and job.get("state") == "READY_GEOMETRY_ONLY":
+        job["state"] = "READY_FULL"
+    job.setdefault("intakeRevalidations", []).append(
+        {
+            "at": now_iso(),
+            "actor": identity["actorId"],
+            "runId": identity["runId"],
+            "unblocked": ["posed-photo-association"],
+            "poseValidationSha256": report_item["sha256"],
+        }
+    )
+    state["capabilities"]["posed-photo-association"] = {
+        "status": "AVAILABLE",
+        "reason": "pose-validation artifact passed format, image-binding, and point-cloud alignment checks",
+        "evidence": [report_item],
+        "updatedAt": now_iso(),
+        "actor": identity["actorId"],
+        "upgrade": {"artifactType": "pose-validation", "artifactSha256": report_item["sha256"]},
+    }
+    event(
+        state,
+        identity["actorId"],
+        "revalidate-intake",
+        {
+            "unblocked": ["posed-photo-association"],
+            "jobState": job.get("state"),
+            "poseValidationSha256": report_item["sha256"],
+        },
+    )
+    state_path = args.state.resolve()
+    expected_revision = int(state.get("revision", -1)) - 1
+    # save_state cannot be reused here: the job rewrite and the state rewrite
+    # must share one lock so read_state never observes a torn job binding.
+    with state_write_lock(state_path):
+        current = load_json(state_path)
+        if int(current.get("revision", -1)) != expected_revision:
+            raise WorkflowError(
+                f"pipeline state revision changed from {expected_revision} to {current.get('revision')}",
+                "STATE_REVISION_CONFLICT",
+                ["reload pipeline-state.json and retry the mutation"],
+            )
+        if sha256_file(job_path) != previous_job_sha:
+            raise WorkflowError(
+                "job.json changed concurrently; revalidation was not applied",
+                "STATE_REVISION_CONFLICT",
+                ["reload pipeline-state.json and retry the mutation"],
+            )
+        write_json_atomic(job_path, job)
+        new_job_sha = sha256_file(job_path)
+        state["jobSha256"] = new_job_sha
+        intake = state["stages"]["intake"]
+        intake["artifacts"] = [{"path": str(job_path), "sha256": new_job_sha, "role": "tool"}]
+        intake["note"] = str(job.get("state", intake.get("note", "")))
+        intake["updatedAt"] = now_iso()
+        write_json_atomic(state_path, state)
+    print(json.dumps({"ok": True, "jobState": job.get("state"), "unblocked": ["posed-photo-association"]}, ensure_ascii=False))
+
+
 def command_publish(args: argparse.Namespace) -> None:
     state = read_state(args.state)
     publisher_identity = bind_execution(
         state, getattr(args, "execution", None), "pipeline:publish", {"publisher"}, args.actor,
     )
     require_prerequisites(state, "publish")
-    require_capabilities(state, "publish")
+    publish_capability_degradations = require_capabilities(state, "publish")
     if open_issues(state):
         raise WorkflowError("cannot publish with unresolved issues")
     scene = scene_artifact(args.scene)
@@ -1542,9 +1695,9 @@ def command_publish(args: argparse.Namespace) -> None:
     if recomputed != quality_report:
         raise WorkflowError("supplied quality report differs from independent V2 recomputation")
     job = load_json(Path(state["job"]))
-    blocked = set(job.get("blockedCapabilities", []))
-    if blocked.intersection({"whole-scene-acceptance", "material-acceptance", "posed-photo-association"}):
-        raise WorkflowError("job remains geometry-only or lacks whole-scene evidence capabilities")
+    # Fail-closed by capability, not structurally: geometry-only publishing is
+    # legal while unvalidated pose/material scopes stay excluded and visible.
+    scope, scope_blocked_capabilities = publish_scope(set(job.get("blockedCapabilities", [])))
     geometry_digest = quality_report.get("geometryDigest")
     if not isinstance(geometry_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", geometry_digest):
         raise WorkflowError("quality report has no valid geometryDigest")
@@ -1571,6 +1724,11 @@ def command_publish(args: argparse.Namespace) -> None:
         "artifactSha256": scene["sha256"],
         "evidenceSetDigest": quality_report.get("evidenceSetDigest"),
         "configDigest": quality_report.get("configDigest"),
+        "publishScope": scope,
+        "scopeBlockedCapabilities": scope_blocked_capabilities,
+        "capabilityDegradations": collect_capability_degradations(
+            state, publish_capability_degradations
+        ),
         "files": files,
     }
     write_json_atomic(publish_dir / "publish-manifest.json", manifest)
@@ -1595,7 +1753,9 @@ def command_publish(args: argparse.Namespace) -> None:
                 "pipelineContractDigest": PIPELINE_CONTRACT_DIGEST,
                 "result": "PASS",
                 "geometryDigest": geometry_digest,
+                "publishScope": scope,
             },
+            "capabilityDegradations": publish_capability_degradations,
         }
     )
     event(
@@ -1606,6 +1766,7 @@ def command_publish(args: argparse.Namespace) -> None:
             "directory": str(publish_dir),
             "geometryDigest": geometry_digest,
             "artifactSha256": scene["sha256"],
+            "publishScope": scope,
         },
     )
     save_state(args.state, state)
@@ -1776,6 +1937,12 @@ def build_parser() -> argparse.ArgumentParser:
     invalidate.add_argument("--reason", required=True)
     invalidate.add_argument("--scene", type=Path)
 
+    revalidate = subparsers.add_parser("revalidate-intake")
+    revalidate.add_argument("--state", required=True, type=Path)
+    revalidate.add_argument("--actor", required=True)
+    revalidate.add_argument("--execution", required=True, type=Path)
+    revalidate.add_argument("--pose-validation", required=True, type=Path, dest="pose_validation")
+
     publish = subparsers.add_parser("publish")
     publish.add_argument("--state", required=True, type=Path)
     publish.add_argument("--actor", required=True)
@@ -1813,6 +1980,8 @@ def main() -> int:
             command_restore(args)
         elif args.command == "invalidate":
             command_invalidate(args)
+        elif args.command == "revalidate-intake":
+            command_revalidate_intake(args)
         elif args.command == "publish":
             command_publish(args)
         else:

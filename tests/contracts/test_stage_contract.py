@@ -392,6 +392,89 @@ class PipelineStageContractTest(unittest.TestCase):
             "STAGE_PREREQUISITE_INCOMPLETE_OR_STALE",
         )
 
+    def test_degraded_capability_with_reason_passes_and_is_recorded(self) -> None:
+        state = loop.read_state(self.state_path)
+        state["capabilities"]["point-cloud-sections"] = {
+            "status": "DEGRADED",
+            "reason": "sparse capture: sections rendered at a coarser cell",
+            "evidence": [],
+        }
+        loop.event(state, "contract-fixture", "degrade-capability", {})
+        loop.save_state(self.state_path, state)
+        evidence = self.artifact("evidence-bundle")
+        loop.command_evaluate_stage(
+            self.args(
+                state=self.state_path,
+                actor="evidence-agent",
+                execution=self.evidence_identity,
+                name="evidence",
+                artifact=[f"evidence-bundle={evidence}"],
+                scene=None,
+                note="degraded capability with a reason must pass",
+            )
+        )
+        updated = loop.read_state(self.state_path)
+        stage = updated["stages"]["evidence"]
+        self.assertEqual(stage["status"], "PASS")
+        self.assertEqual(
+            stage["capabilityDegradations"],
+            [
+                {
+                    "capability": "point-cloud-sections",
+                    "degradationReason": "sparse capture: sections rendered at a coarser cell",
+                }
+            ],
+        )
+        collected = loop.collect_capability_degradations(
+            updated, [{"capability": "score-gate", "degradationReason": "fixture"}]
+        )
+        self.assertIn(
+            {
+                "stage": "evidence",
+                "capability": "point-cloud-sections",
+                "degradationReason": "sparse capture: sections rendered at a coarser cell",
+            },
+            collected,
+        )
+        self.assertIn(
+            {"stage": "publish", "capability": "score-gate", "degradationReason": "fixture"},
+            collected,
+        )
+
+    def test_degraded_capability_without_reason_fails_closed(self) -> None:
+        state = loop.read_state(self.state_path)
+        state["capabilities"]["point-cloud-sections"] = {
+            "status": "DEGRADED",
+            "reason": "   ",
+            "evidence": [],
+        }
+        loop.event(state, "contract-fixture", "degrade-capability-no-reason", {})
+        loop.save_state(self.state_path, state)
+        evidence = self.artifact("evidence-bundle")
+        with self.assertRaisesRegex(loop.WorkflowError, "point-cloud-sections"):
+            loop.command_evaluate_stage(
+                self.args(
+                    state=self.state_path,
+                    actor="evidence-agent",
+                    execution=self.evidence_identity,
+                    name="evidence",
+                    artifact=[f"evidence-bundle={evidence}"],
+                    scene=None,
+                    note="degraded capability without a reason must fail",
+                )
+            )
+
+    def test_publish_scope_permits_geometry_only_and_blocks_missing_whole_scene(self) -> None:
+        self.assertEqual(loop.publish_scope(set()), ("full", []))
+        scope, pending = loop.publish_scope(
+            {"posed-photo-association", "material-acceptance"}
+        )
+        self.assertEqual(scope, "geometry-only")
+        self.assertEqual(pending, ["material-acceptance", "posed-photo-association"])
+        with self.assertRaises(loop.WorkflowError) as caught:
+            loop.publish_scope({"whole-scene-acceptance"})
+        self.assertEqual(caught.exception.code, "PUBLISH_WHOLE_SCENE_BLOCKED")
+
     def test_v1_state_requires_explicit_fail_closed_migration(self) -> None:
         legacy = json.loads(self.state_path.read_text(encoding="utf-8"))
         legacy["schemaVersion"] = 1

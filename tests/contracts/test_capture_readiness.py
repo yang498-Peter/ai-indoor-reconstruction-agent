@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import laspy
 import numpy as np
@@ -241,6 +242,52 @@ class CaptureReadinessContractTest(unittest.TestCase):
                 self.output / "capture-index-v2-manifest",
                 capture_manifest=manifest_path,
             )
+
+    def test_whole_scene_acceptance_tracks_geometry_readiness(self):
+        write_las(self.capture / "room.las")
+        manifest = discover_capture.build_manifest(
+            self.capture,
+            coordinate_frame=COORDINATE_FRAME,
+        )
+        self.assertEqual(manifest["state"], "READY_GEOMETRY_ONLY")
+        # Whole-scene geometry acceptance depends only on geometric evidence,
+        # so a supported cloud in a declared frame must not block it.
+        self.assertNotIn("whole-scene-acceptance", manifest["blockedCapabilities"])
+        self.assertIn("material-acceptance", manifest["blockedCapabilities"])
+        self.assertIn("posed-photo-association", manifest["blockedCapabilities"])
+
+        undeclared = discover_capture.build_manifest(self.capture)
+        self.assertEqual(undeclared["state"], "BLOCKED_COORDINATE_FRAME_REQUIRED")
+        self.assertIn("whole-scene-acceptance", undeclared["blockedCapabilities"])
+
+    def test_ready_full_when_no_capability_is_blocked(self):
+        write_las(self.capture / "room.las")
+        (self.capture / "frame.jpg").write_bytes(b"jpeg-fixture")
+        passing_pose = {
+            "schemaVersion": "1.0",
+            "artifactType": "pose-validation",
+            "status": "PASS",
+            "sourceSetDigest": "0" * 64,
+            "checks": {
+                "format": "PASS",
+                "coordinateConvention": "PASS",
+                "imageBindings": "PASS",
+                "pointCloudAlignment": "PASS",
+            },
+            "sources": [],
+            "frames": [],
+            "errors": [],
+        }
+        with mock.patch.object(
+            discover_capture, "validate_pose_sources", return_value=passing_pose
+        ):
+            manifest = discover_capture.build_manifest(
+                self.capture,
+                coordinate_frame=COORDINATE_FRAME,
+            )
+        self.assertEqual(manifest["state"], "READY_FULL")
+        self.assertEqual(manifest["blockedCapabilities"], [])
+        self.assertEqual(manifest["photoPoseAssociationGate"], "PASS")
 
     def test_non_metre_input_is_normalized_to_source_metres_in_the_index(self):
         write_las(self.capture / "room.las")

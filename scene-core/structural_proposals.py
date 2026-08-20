@@ -331,43 +331,85 @@ def build_proposals(
     indexed_count = int(index.manifest["indexedPointCount"])
     stride = max(1, int(math.ceil(indexed_count / max_points)))
     point_query = index.query_all(z_min=floor_z + band_min_m, z_max=floor_z + band_max_m, every=stride)
+    parameters = {
+        "floorZ": floor_z,
+        "bandMinM": band_min_m,
+        "bandMaxM": band_max_m,
+        "rasterCellM": raster_cell_m,
+        "minLengthM": min_length_m,
+        "maxGapM": max_gap_m,
+        "minCellPoints": min_cell_points,
+    }
+    manifest_path = index.root / "capture-index.json"
     if point_query.point_count < 40:
-        raise ValueError("structural height band has too few indexed points")
+        # Sparse captures degrade to an explicit empty proposal set: the
+        # pipeline keeps moving and the Agent authors geometry manually.
+        reason = (
+            f"structural height band has too few indexed points "
+            f"({point_query.point_count} < 40); no automated proposals were generated"
+        )
+        return {
+            "schemaVersion": 1,
+            "kind": "structural-proposals",
+            "status": "DEGRADED",
+            "degradationReason": reason,
+            "index": str(index.root),
+            "indexFingerprint": index.manifest["indexFingerprint"],
+            "indexManifestSha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "parameters": {**parameters, "degradedRasterCellM": None},
+            "sampling": {
+                "stride": stride,
+                "pointCount": point_query.point_count,
+                "queryStats": point_query.stats,
+            },
+            "raster": None,
+            "axisFamilies": [],
+            "faceObservations": [],
+            "wallCandidates": [],
+            "warnings": [reason],
+        }
     xy = np.column_stack((point_query.x, point_query.y))
     min_x = float(np.min(point_query.x))
     max_x = float(np.max(point_query.x))
     min_y = float(np.min(point_query.y))
     max_y = float(np.max(point_query.y))
-    width = max(1, int(math.ceil((max_x - min_x) / raster_cell_m)) + 1)
-    height = max(1, int(math.ceil((max_y - min_y) / raster_cell_m)) + 1)
-    if width * height > 50_000_000:
-        raise ValueError("proposal raster is too large; raise raster_cell_m")
-    col = np.clip(((point_query.x - min_x) / raster_cell_m).astype(np.int32), 0, width - 1)
-    row = np.clip(((max_y - point_query.y) / raster_cell_m).astype(np.int32), 0, height - 1)
+    # Oversized rasters coarsen deterministically instead of failing; the
+    # effective cell is recorded so the loss of resolution stays auditable.
+    effective_cell_m = raster_cell_m
+    degraded_cell_m: float | None = None
+    width = max(1, int(math.ceil((max_x - min_x) / effective_cell_m)) + 1)
+    height = max(1, int(math.ceil((max_y - min_y) / effective_cell_m)) + 1)
+    while width * height > 50_000_000:
+        effective_cell_m *= 2.0
+        degraded_cell_m = effective_cell_m
+        width = max(1, int(math.ceil((max_x - min_x) / effective_cell_m)) + 1)
+        height = max(1, int(math.ceil((max_y - min_y) / effective_cell_m)) + 1)
+    col = np.clip(((point_query.x - min_x) / effective_cell_m).astype(np.int32), 0, width - 1)
+    row = np.clip(((max_y - point_query.y) / effective_cell_m).astype(np.int32), 0, height - 1)
     counts = np.zeros((height, width), dtype=np.uint32)
     np.add.at(counts, (row, col), 1)
     occupied = (counts >= max(1, int(min_cell_points))).astype(np.uint8) * 255
     occupied = cv2.morphologyEx(occupied, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
-    threshold = max(10, int(round(min_length_m / raster_cell_m * 0.45)))
+    threshold = max(10, int(round(min_length_m / effective_cell_m * 0.45)))
     lines = cv2.HoughLinesP(
         occupied,
         rho=1.0,
         theta=np.pi / 720.0,
         threshold=threshold,
-        minLineLength=max(5, int(round(min_length_m / raster_cell_m))),
-        maxLineGap=max(1, int(round(max_gap_m / raster_cell_m))),
+        minLineLength=max(5, int(round(min_length_m / effective_cell_m))),
+        maxLineGap=max(1, int(round(max_gap_m / effective_cell_m))),
     )
     # HoughLinesP returns (N,1,4) or (N,4) depending on the OpenCV build.
     raw_lines = [] if lines is None else np.asarray(lines).reshape(-1, 4)
     observations: list[LineObservation] = []
     for index_number, (x0, y0, x1, y1) in enumerate(raw_lines):
-        start = np.asarray([min_x + x0 * raster_cell_m, max_y - y0 * raster_cell_m], dtype=np.float64)
-        end = np.asarray([min_x + x1 * raster_cell_m, max_y - y1 * raster_cell_m], dtype=np.float64)
+        start = np.asarray([min_x + x0 * effective_cell_m, max_y - y0 * effective_cell_m], dtype=np.float64)
+        end = np.asarray([min_x + x1 * effective_cell_m, max_y - y1 * effective_cell_m], dtype=np.float64)
         refined = _refine_observation(
             start,
             end,
             xy,
-            corridor_m=max(0.055, raster_cell_m * 1.5),
+            corridor_m=max(0.055, effective_cell_m * 1.5),
             observation_id=f"raw-face-{index_number + 1:03d}",
         )
         if refined is not None and refined.length >= min_length_m:
@@ -422,8 +464,14 @@ def build_proposals(
             }
         )
 
-    manifest_path = index.root / "capture-index.json"
     warnings: list[str] = []
+    degradation_reason: str | None = None
+    if degraded_cell_m is not None:
+        degradation_reason = (
+            f"proposal raster exceeded 50M cells; rasterCellM was coarsened from "
+            f"{raster_cell_m} to {degraded_cell_m}"
+        )
+        warnings.append(degradation_reason)
     if not paired:
         warnings.append("no parallel wall-face pairs were found; all thicknesses remain single-face defaults")
     if len(families) < 2:
@@ -431,25 +479,18 @@ def build_proposals(
     return {
         "schemaVersion": 1,
         "kind": "structural-proposals",
-        "status": "CANDIDATES_ONLY",
+        "status": "DEGRADED" if degraded_cell_m is not None else "CANDIDATES_ONLY",
+        "degradationReason": degradation_reason,
         "index": str(index.root),
         "indexFingerprint": index.manifest["indexFingerprint"],
         "indexManifestSha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "parameters": {
-            "floorZ": floor_z,
-            "bandMinM": band_min_m,
-            "bandMaxM": band_max_m,
-            "rasterCellM": raster_cell_m,
-            "minLengthM": min_length_m,
-            "maxGapM": max_gap_m,
-            "minCellPoints": min_cell_points,
-        },
+        "parameters": {**parameters, "degradedRasterCellM": degraded_cell_m},
         "sampling": {
             "stride": stride,
             "pointCount": point_query.point_count,
             "queryStats": point_query.stats,
         },
-        "raster": {"originX": min_x, "originY": max_y, "widthPx": width, "heightPx": height},
+        "raster": {"originX": min_x, "originY": max_y, "widthPx": width, "heightPx": height, "cellM": effective_cell_m},
         "axisFamilies": families,
         "faceObservations": [item.as_dict() for item in observations],
         "wallCandidates": candidates,

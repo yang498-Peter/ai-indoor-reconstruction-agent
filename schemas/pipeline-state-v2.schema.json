@@ -95,7 +95,18 @@
         "evaluator": {"type": "string", "minLength": 1},
         "evaluation": {"type": ["object", "null"]},
         "executionRunId": {"type": ["string", "null"]},
-        "identityDigest": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+        "identityDigest": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "capabilityDegradations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["capability", "degradationReason"],
+            "properties": {
+              "capability": {"type": "string", "minLength": 1},
+              "degradationReason": {"type": "string", "minLength": 1}
+            }
+          }
+        }
       }
     },
     "event": {
