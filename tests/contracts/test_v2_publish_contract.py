@@ -162,6 +162,50 @@ class V2PublishContractTest(unittest.TestCase):
         self.assertNotIn("structures", report["checks"])
         self.assertNotIn("qualityLoops", report["checks"])
         self.assertEqual(set(schema["required"]), set(report))
+        self.assertEqual(set(schema["properties"]["checks"]["required"]), set(report["checks"]))
+        self.assertEqual(report["checks"]["sharedRootCount"], 0)
+
+    def test_shared_root_derivations_pass_and_are_reported_as_info(self) -> None:
+        # Pure geometry capture: every derived artifact descends from one LAS.
+        # Shared roots must not FAIL; they surface as sharedRootCount info.
+        root_digest = "d" * 64
+        level = self.scene["rootNodeIds"][0]
+        api.op_create_wall(self.scene, {
+            "id": "wall_inferred", "level": level, "start": [1.0, 1.0], "end": [3.0, 1.0],
+            "height": 3.0, "thickness": 0.12, "execution": AUTHOR,
+        }, "author-run")
+        for name, content, params in (
+            ("band-low.bin", b"low band bytes", {"band": [0.3, 0.9]}),
+            ("band-high.bin", b"high band bytes", {"band": [1.8, 2.4]}),
+        ):
+            (self.root / name).write_bytes(content)
+            receipt_name = f"{name}.provenance.json"
+            (self.root / receipt_name).write_text(json.dumps({
+                "outputContentSha256": hashlib.sha256(content).hexdigest(),
+                "rootContentSha256s": [root_digest],
+                "producer": "pointcloud-evidence",
+                "generatorParameters": params,
+            }), encoding="utf-8")
+            api.op_attach_evidence(self.scene, self.scene_path, {
+                "id": "wall_inferred", "type": "derived-band", "path": name,
+                "provenanceReceipt": receipt_name,
+            })
+        api.op_accept(self.scene, self.scene_path, {
+            "id": "wall_inferred", "mode": "inferred", "reviewerIdentity": REVIEWER,
+            "reason": "two height-band derivations of the single capture root",
+        })
+        self.scene_path.write_text(
+            json.dumps(self.scene, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.review_path.write_text(
+            json.dumps(self._review_receipt(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report = self._evaluate()
+        self.assertEqual(report["status"], "PASS")
+        self.assertTrue(report["checks"]["evidenceLineagesDistinct"])
+        self.assertEqual(report["checks"]["sharedRootCount"], 1)
 
     def test_stale_claim_snapshot_is_an_explicit_quality_failure(self) -> None:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))

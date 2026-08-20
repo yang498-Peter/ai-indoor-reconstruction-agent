@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from capture_index import CaptureIndex
+from scene_api import evidence_lineage_id
 
 
 def _sha256(path: Path) -> str:
@@ -31,6 +32,45 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _root_content_sha256(index: CaptureIndex) -> str:
+    """Content hash of the raw capture every derived artifact descends from."""
+    identity = index.manifest.get("sourceIdentity") or {}
+    return identity.get("contentSha256") or index.manifest["indexFingerprint"]
+
+
+def _relative_scene_path(target: Path, scene_dir: Path) -> str:
+    """Evidence paths stored in scene JSON must survive moving the bundle."""
+    return Path(os.path.relpath(Path(target).resolve(), Path(scene_dir).resolve())).as_posix()
+
+
+def _evidence_source(
+    source_type: str,
+    path: str,
+    content_sha256: str,
+    producer: str,
+    root_content_sha256s: list[str] | None = None,
+    generator_parameters: object = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Fully provenance-bound evidence source (quality_report_v2 contract).
+
+    ``sha256`` and ``contentSha256`` are intentionally both written: legacy
+    consumers read ``sha256`` while quality_report_v2 verifies both keys.
+    """
+    roots = sorted(set(root_content_sha256s or [content_sha256]))
+    source: dict[str, Any] = {
+        "type": source_type, "sourceRole": source_type, "path": path,
+        "sha256": content_sha256, "contentSha256": content_sha256,
+        "producer": producer, "rootContentSha256s": roots,
+        "lineageId": evidence_lineage_id(roots, producer, generator_parameters),
+    }
+    if generator_parameters is not None:
+        source["generatorParameters"] = generator_parameters
+    if note:
+        source["note"] = note
+    return source
 
 
 def _dataset_id(index: CaptureIndex) -> str:
@@ -298,6 +338,8 @@ def _scene_layers(
     evidence_sha: str,
     proposal_sha: str,
     photos: list[dict[str, Any]],
+    proposal_path: str = "structural-proposals.json",
+    root_sha256: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     authority = _base_scene(dataset, "authority", floor_z, ceiling_z, source_meta)
     hypothesis = _base_scene(dataset, "hypothesis", floor_z, ceiling_z, source_meta)
@@ -321,10 +363,18 @@ def _scene_layers(
                 "sourceProposalIds": wall["sourceProposalIds"],
             },
         }
+        roots = [root_sha256] if root_sha256 else None
         sources = [
-            {"type": "high-structure-slice", "path": evidence_path, "sha256": evidence_sha},
-            {"type": "inference-basis", "path": "structural-proposals.json", "sha256": proposal_sha,
-             "note": "dominant-axis and collinear interval consolidation"},
+            _evidence_source(
+                "high-structure-slice", evidence_path, evidence_sha,
+                "indexed-pointcloud-evidence", roots,
+                generator_parameters={"artifact": "band-walls"},
+            ),
+            _evidence_source(
+                "inference-basis", proposal_path, proposal_sha,
+                "structural-proposals", roots,
+                note="dominant-axis and collinear interval consolidation",
+            ),
         ]
         _add(authority, json.loads(json.dumps(common)), {
             "status": "candidate", "sources": sources,
@@ -357,7 +407,11 @@ def _scene_layers(
                 "inferenceReason": "largest connected raw floor-band component",
                 "authorityRefs": [],
             },
-        }, {"status": "accepted-inferred", "sources": [{"type": "overview", "path": evidence_path, "sha256": evidence_sha}]})
+        }, {"status": "accepted-inferred", "sources": [_evidence_source(
+            "overview", evidence_path, evidence_sha, "indexed-pointcloud-evidence",
+            [root_sha256] if root_sha256 else None,
+            generator_parameters={"artifact": "band-walls"},
+        )]})
 
     for index, item in enumerate(items, 1):
         item_id = f"item_clean{index:03d}"
@@ -376,8 +430,12 @@ def _scene_layers(
         for scene in (hypothesis, presentation):
             _add(scene, json.loads(json.dumps(node)), {
                 "status": "accepted-inferred",
-                "sources": [{"type": "tabletop", "path": evidence_path, "sha256": evidence_sha,
-                             "note": f"supportCells={item['supportCells']}"}],
+                "sources": [_evidence_source(
+                    "tabletop", evidence_path, evidence_sha, "indexed-pointcloud-evidence",
+                    [root_sha256] if root_sha256 else None,
+                    generator_parameters={"artifact": "band-walls"},
+                    note=f"supportCells={item['supportCells']}",
+                )],
             })
     return authority, hypothesis, presentation
 
@@ -443,7 +501,11 @@ def build(workspace: Path, output: Path, level_receipt: Path, transforms: Path |
     photos = _load_photos(transforms)
     authority, hypothesis, presentation = _scene_layers(
         _dataset_id(index), walls, floor_polygon, items, floor_z, ceiling_z,
-        source_meta, "evidence/band-walls.png", _sha256(evidence_path), _sha256(proposals_path), photos,
+        source_meta,
+        _relative_scene_path(evidence_path, output), _sha256(evidence_path),
+        _sha256(proposals_path), photos,
+        proposal_path=_relative_scene_path(proposals_path, output),
+        root_sha256=_root_content_sha256(index),
     )
     output.mkdir(parents=True)
     _atomic_json(output / "scene-authority.json", authority)

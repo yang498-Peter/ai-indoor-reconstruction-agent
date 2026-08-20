@@ -116,71 +116,121 @@ class EvidenceIndependenceContractTest(unittest.TestCase):
         )
         self.assertEqual(api.claim_payload(fixture["scene"], "wall_a"), fixture["wallClaim"])
 
-    def test_distinct_derived_files_with_one_root_do_not_count_as_independent(self) -> None:
+    def _attach_derived(
+        self,
+        name: str,
+        content: bytes,
+        roots: list[str],
+        producer: str,
+        generator_parameters=None,
+    ) -> None:
+        path = self._write(name, content)
+        receipt_name = f"{name}.provenance.json"
+        receipt = {
+            "outputContentSha256": hashlib.sha256(content).hexdigest(),
+            "rootContentSha256s": roots,
+            "producer": producer,
+        }
+        if generator_parameters is not None:
+            receipt["generatorParameters"] = generator_parameters
+        (self.root / receipt_name).write_text(json.dumps(receipt), encoding="utf-8")
+        api.op_attach_evidence(
+            self.scene,
+            self.scene_path,
+            {
+                "id": "wall_host", "type": "derived", "path": path,
+                "provenanceReceipt": receipt_name,
+            },
+        )
+
+    def test_same_root_distinct_generators_count_as_independent(self) -> None:
+        # A pure point-cloud capture derives everything from one LAS root.
+        # Different derivation pipelines over that root are legal independent
+        # lineages (SKILL: missing evidence lowers confidence, never blocks).
         root_digest = "f" * 64
-        for name, content, role in (
-            ("crop-a.bin", b"derived crop a", "elevation"),
-            ("crop-b.bin", b"derived crop b", "overlay"),
-        ):
-            path = self._write(name, content)
-            output_digest = hashlib.sha256(content).hexdigest()
-            receipt_name = f"{name}.provenance.json"
-            (self.root / receipt_name).write_text(
-                json.dumps({
-                    "outputContentSha256": output_digest,
-                    "rootContentSha256s": [root_digest],
-                    "producer": "derived-fixture",
-                }),
-                encoding="utf-8",
+        self._attach_derived("crop-a.bin", b"derived crop a", [root_digest], "elevation-renderer")
+        self._attach_derived("crop-b.bin", b"derived crop b", [root_digest], "ortho-renderer")
+        entry = api.op_accept(
+            self.scene,
+            self.scene_path,
+            {
+                "id": "wall_host", "mode": "inferred",
+                "reviewerIdentity": REVIEWER, "reason": "two derivation pipelines of one capture",
+            },
+        )
+        self.assertEqual(entry["status"], "accepted-inferred")
+        lineages = {source["lineageId"] for source in entry["sources"]}
+        self.assertEqual(len(lineages), 2)
+
+    def test_same_generator_different_parameters_count_as_independent(self) -> None:
+        root_digest = "f" * 64
+        self._attach_derived(
+            "band-low.bin", b"low band slice", [root_digest],
+            "pointcloud-evidence", {"band": [0.3, 0.9]},
+        )
+        self._attach_derived(
+            "band-high.bin", b"high band slice", [root_digest],
+            "pointcloud-evidence", {"band": [1.8, 2.4]},
+        )
+        entry = api.op_accept(
+            self.scene,
+            self.scene_path,
+            {
+                "id": "wall_host", "mode": "inferred",
+                "reviewerIdentity": REVIEWER, "reason": "distinct height bands of one capture",
+            },
+        )
+        self.assertEqual(entry["status"], "accepted-inferred")
+
+    def test_overlapping_roots_alone_no_longer_reject(self) -> None:
+        self._attach_derived("derived-a.bin", b"derived a", ["a" * 64, "b" * 64], "generator-a")
+        self._attach_derived("derived-b.bin", b"derived b", ["a" * 64, "c" * 64], "generator-b")
+        entry = api.op_accept(
+            self.scene,
+            self.scene_path,
+            {
+                "id": "wall_host", "mode": "inferred",
+                "reviewerIdentity": REVIEWER, "reason": "distinct generators over overlapping roots",
+            },
+        )
+        self.assertEqual(entry["status"], "accepted-inferred")
+
+    def test_same_generator_same_parameters_rerun_is_rejected(self) -> None:
+        # Anti-cheat baseline: re-running one generator with identical
+        # parameters yields the same lineage fingerprint even when output
+        # bytes differ (timestamps, compression), and must not count twice.
+        root_digest = "f" * 64
+        self._attach_derived(
+            "run-1.bin", b"first run bytes", [root_digest],
+            "pointcloud-evidence", {"band": [0.3, 0.9]},
+        )
+        self._attach_derived(
+            "run-2.bin", b"second run bytes", [root_digest],
+            "pointcloud-evidence", {"band": [0.3, 0.9]},
+        )
+        with self.assertRaisesRegex(api.SceneError, "INFERRED_NEEDS_TWO_DISTINCT_SOURCES"):
+            api.op_accept(
+                self.scene,
+                self.scene_path,
+                {
+                    "id": "wall_host", "mode": "inferred",
+                    "reviewerIdentity": REVIEWER, "reason": "same pipeline run twice",
+                },
             )
 
-    def test_partially_overlapping_root_sets_do_not_count_as_independent(self) -> None:
-        for index, (name, content, roots) in enumerate((
-            ("derived-a.bin", b"derived a", ["a" * 64, "b" * 64]),
-            ("derived-b.bin", b"derived b", ["a" * 64, "c" * 64]),
-        )):
-            path = self._write(name, content)
-            receipt_name = f"{name}.provenance.json"
-            (self.root / receipt_name).write_text(
-                json.dumps({
-                    "outputContentSha256": hashlib.sha256(content).hexdigest(),
-                    "rootContentSha256s": roots,
-                    "producer": f"derived-fixture-{index}",
-                }),
-                encoding="utf-8",
-            )
-            api.op_attach_evidence(
-                self.scene,
-                self.scene_path,
-                {
-                    "id": "wall_host", "type": f"derived-{index}", "path": path,
-                    "provenanceReceipt": receipt_name,
-                },
-            )
+    def test_copied_file_under_second_receipt_is_rejected(self) -> None:
+        # Anti-cheat baseline: identical bytes stay one source no matter how
+        # the receipts describe them.
+        root_digest = "f" * 64
+        self._attach_derived("copy-1.bin", b"identical payload", [root_digest], "generator-a")
+        self._attach_derived("copy-2.bin", b"identical payload", [root_digest], "generator-b")
         with self.assertRaisesRegex(api.SceneError, "INFERRED_NEEDS_TWO_DISTINCT_SOURCES"):
             api.op_accept(
                 self.scene,
                 self.scene_path,
                 {
                     "id": "wall_host", "mode": "inferred",
-                    "reviewerIdentity": REVIEWER, "reason": "shared root cannot be independent",
-                },
-            )
-            api.op_attach_evidence(
-                self.scene,
-                self.scene_path,
-                {
-                    "id": "wall_host", "type": role, "path": path,
-                    "provenanceReceipt": receipt_name,
-                },
-            )
-        with self.assertRaisesRegex(api.SceneError, "INFERRED_NEEDS_TWO_DISTINCT_SOURCES"):
-            api.op_accept(
-                self.scene,
-                self.scene_path,
-                {
-                    "id": "wall_host", "mode": "inferred",
-                    "reviewerIdentity": REVIEWER, "reason": "two crops from one root",
+                    "reviewerIdentity": REVIEWER, "reason": "one file copied twice",
                 },
             )
 

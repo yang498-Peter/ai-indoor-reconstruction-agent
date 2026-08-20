@@ -298,6 +298,8 @@ def _room_dividers(
     v: np.ndarray,
     envelope: dict[str, float],
     evidence_path: Path,
+    evidence_rel: str | None = None,
+    root_sha: str | None = None,
 ) -> list[dict[str, Any]]:
     glass = next((wall for wall in authored if wall.get("wallKind") == "glass"), None)
     if glass is None:
@@ -344,9 +346,11 @@ def _room_dividers(
             "role": "north-room-divider", "wallKind": "solid",
             "authorityStatus": "candidate", "presentationStatus": "accepted-inferred",
             "evidence": {
-                "path": "../geometry-workspace/evidence/band-walls.png",
+                "path": evidence_rel or "../geometry-workspace/evidence/band-walls.png",
                 "sha256": _sha256(evidence_path),
                 "observation": "Raw perpendicular return inside the repeated north room band; endpoints are topology completion.",
+                "producer": "indexed-pointcloud-evidence",
+                "rootContentSha256s": [root_sha] if root_sha else None,
             },
             "openings": [], "frameSpacingM": None,
         })
@@ -528,9 +532,23 @@ def _furniture_items(
     source = polygon_uv[:, :1] * u + polygon_uv[:, 1:] * v
     min_x, min_y = np.min(source, axis=0)
     max_x, max_y = np.max(source, axis=0)
-    query = index.query_bbox(min_x, min_y, max_x, max_y, z_min=-0.45, z_max=0.25, every=2)
+    # The tabletop band lives 0.66-0.88 m above the floor PLANE, so the raw
+    # z window must be derived from the plane over the query rectangle; an
+    # absolute window silently returns nothing when the vertical datum moves.
+    band_lo, band_hi = 0.66, 0.88
+    corner_z = [
+        _plane_z(floor_plane, corner_x, corner_y)
+        for corner_x in (float(min_x), float(max_x))
+        for corner_y in (float(min_y), float(max_y))
+    ]
+    query = index.query_bbox(
+        min_x, min_y, max_x, max_y,
+        z_min=min(corner_z) + band_lo - 0.05,
+        z_max=max(corner_z) + band_hi + 0.05,
+        every=2,
+    )
     height = query.z - _plane_z(floor_plane, query.x, query.y)
-    keep = (height >= 0.66) & (height <= 0.88)
+    keep = (height >= band_lo) & (height <= band_hi)
     plan = np.column_stack((query.x[keep], query.y[keep]))
     if plan.shape[0] < 100:
         return []
@@ -598,6 +616,35 @@ def _furniture_items(
         cv2.polylines(debug, [box_px], True, (0, 180, 255), 2, cv2.LINE_AA)
     cv2.imwrite(str(output / "evidence" / "furniture-support.png"), debug)
     return sorted(items, key=lambda item: (item["center"][1], item["center"][0]))[:28]
+
+
+def _furniture_evidence_sources(
+    furniture_sha: str,
+    picks_payload: dict[str, Any] | None,
+    root_sha: str,
+) -> list[dict[str, Any]]:
+    """Furniture evidence comes only from real inputs.
+
+    The raw height-band support raster always exists; a corroborating photo is
+    included only when the author picks actually supply one.  A missing photo
+    means the source is omitted, never substituted with a dataset-specific
+    placeholder.
+    """
+    sources = [base._evidence_source(
+        "tabletop-height-support", "evidence/furniture-support.png", furniture_sha,
+        "cleanroom-macro-builder", [root_sha],
+        generator_parameters={"artifact": "furniture-support"},
+        note="instance position is a raw height-band proposal; not a measured furniture receipt",
+    )]
+    photo = (picks_payload or {}).get("furnitureEvidence")
+    if isinstance(photo, dict) and photo.get("path") and photo.get("sha256"):
+        sources.append(base._evidence_source(
+            "posed-photo-family", str(photo["path"]), str(photo["sha256"]),
+            "author-picks",
+            note=str(photo.get("note") or
+                     "photo proves a repeated furniture family, not this exact instance"),
+        ))
+    return sources
 
 
 def _north_room_topology(walls: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -674,14 +721,28 @@ def _export_lrpc(
     max_x, max_y = np.max(source, axis=0) + 0.8
     indexed = int(index.manifest["indexedPointCount"])
     stride = max(1, int(math.ceil(indexed / max_points)))
-    query = index.query_bbox(min_x, min_y, max_x, max_y, z_min=-1.3, z_max=3.2, every=stride)
+    # Export band is plane-relative (-0.18..3.45 m over the floor plane); the
+    # raw z window is derived from the plane so a shifted vertical datum keeps
+    # the full room instead of silently clipping it.
+    height_lo, height_hi = -0.18, 3.45
+    corner_z = [
+        _plane_z(floor_plane, corner_x, corner_y)
+        for corner_x in (float(min_x), float(max_x))
+        for corner_y in (float(min_y), float(max_y))
+    ]
+    query = index.query_bbox(
+        min_x, min_y, max_x, max_y,
+        z_min=min(corner_z) + height_lo - 0.10,
+        z_max=max(corner_z) + height_hi + 0.10,
+        every=stride,
+    )
     plan = np.column_stack((query.x, query.y))
     along_u, along_v = plan @ u, plan @ v
     height = query.z - _plane_z(floor_plane, query.x, query.y)
     keep = (
         (along_u >= envelope["uMin"] - 0.6) & (along_u <= envelope["uMax"] + 0.6)
         & (along_v >= envelope["vMin"] - 0.6) & (along_v <= envelope["vMax"] + 0.6)
-        & (height >= -0.18) & (height <= 3.45)
+        & (height >= height_lo) & (height <= height_hi)
     )
     x, y, h, rgb = query.x[keep], query.y[keep], height[keep], query.rgb[keep]
     payload = bytearray(struct.pack("<4sIII", b"LRPC", 1, int(x.size), 16))
@@ -720,6 +781,10 @@ def build(
         raise ValueError("level survey and CaptureIndex fingerprints differ")
 
     u, v, axes = _dominant_basis(proposals)
+    root_sha = base._root_content_sha256(index)
+    evidence_rel = base._relative_scene_path(evidence_path, output)
+    proposals_rel = base._relative_scene_path(proposals_path, output)
+    survey_rel = base._relative_scene_path(survey_path, output)
     floor_polygon, envelope = _main_floor_rectangle(index, floor_plane, u, v, output)
     center = np.mean(np.asarray(floor_polygon, dtype=np.float64), axis=0)
     withheld_shell = _shell_walls(floor_polygon)
@@ -729,7 +794,8 @@ def build(
         if picks_payload.get("indexFingerprint") != index.manifest["indexFingerprint"]:
             raise ValueError("author picks and CaptureIndex fingerprints differ")
         interiors, panorama_band_enabled = _panorama_room_band(picks_payload, interiors, proposals)
-        dividers = (_room_dividers(proposals, interiors, u, v, envelope, evidence_path)
+        dividers = (_room_dividers(proposals, interiors, u, v, envelope, evidence_path,
+                                   evidence_rel=evidence_rel, root_sha=root_sha)
                     if picks_payload.get("allowInferredRoomDividers") is True else [])
         interiors.extend(dividers)
     else:
@@ -750,7 +816,8 @@ def build(
     authority, hypothesis, presentation = base._scene_layers(
         base._dataset_id(index), walls, floor_polygon, items,
         float(floor_plane["c"]), float(ceiling_plane["c"]), source_meta,
-        str(evidence_path), _sha256(evidence_path), _sha256(proposals_path), photos,
+        evidence_rel, _sha256(evidence_path), _sha256(proposals_path), photos,
+        proposal_path=proposals_rel, root_sha256=root_sha,
     )
     pipeline = [
         {"id": "intake", "label": "Clean-room raw capture", "status": "PASS"},
@@ -780,9 +847,16 @@ def build(
             )
             scene["evidence"]["slab_visual01"]["status"] = "accepted-inferred"
             scene["evidence"]["slab_visual01"]["sources"] = [
-                {"type": "floor-support", "path": "evidence/cleanroom-floor-support.png",
-                 "sha256": _sha256(output / "evidence" / "cleanroom-floor-support.png")},
-                {"type": "level-survey", "path": str(survey_path), "sha256": _sha256(survey_path)},
+                base._evidence_source(
+                    "floor-support", "evidence/cleanroom-floor-support.png",
+                    _sha256(output / "evidence" / "cleanroom-floor-support.png"),
+                    "cleanroom-macro-builder", [root_sha],
+                    generator_parameters={"artifact": "floor-support"},
+                ),
+                base._evidence_source(
+                    "level-survey", survey_rel, _sha256(survey_path),
+                    "level-survey", [root_sha],
+                ),
             ]
             scene["evidence"]["slab_visual01"]["reason"] = (
                 "display context only; source floor plane and sparse-support caveat remain preserved"
@@ -802,10 +876,18 @@ def build(
             if wall.get("evidence"):
                 evidence_status = wall.get("authorityStatus", "candidate") if scene is authority else wall.get("presentationStatus", "accepted-inferred")
                 existing_sources = list((scene["evidence"].get(node["id"]) or {}).get("sources", []))
-                local_source = {
-                    "type": "local-elevation-or-panorama", "path": wall["evidence"]["path"],
-                    "sha256": wall["evidence"]["sha256"], "note": wall["evidence"]["observation"],
-                }
+                # An author pick's photo/elevation is itself a raw capture, so
+                # by default it is its own provenance root - a lineage
+                # genuinely independent of the LAS-derived sources.  Walls
+                # whose evidence is LAS-derived (e.g. inferred dividers) carry
+                # their own producer/root instead.
+                local_source = base._evidence_source(
+                    "local-elevation-or-panorama", wall["evidence"]["path"],
+                    wall["evidence"]["sha256"],
+                    wall["evidence"].get("producer") or "author-picks",
+                    wall["evidence"].get("rootContentSha256s"),
+                    note=wall["evidence"]["observation"],
+                )
                 scene["evidence"][node["id"]] = {
                     "status": evidence_status,
                     "sources": existing_sources + [local_source],
@@ -822,10 +904,11 @@ def build(
                         "width": float(opening["width"]), "height": float(opening["height"]), "sillHeight": 0.0,
                     }, {
                         "status": evidence_status,
-                        "sources": [local_source, {
-                            "type": "inference-basis", "path": "../geometry-workspace/structural-proposals.json",
-                            "sha256": _sha256(proposals_path), "note": "host wall axis and current-capture proposal ledger",
-                        }],
+                        "sources": [local_source, base._evidence_source(
+                            "inference-basis", proposals_rel, _sha256(proposals_path),
+                            "structural-proposals", [root_sha],
+                            note="host wall axis and current-capture proposal ledger",
+                        )],
                         "reason": "panorama/elevation-supported opening hypothesis; final dimensions remain under review",
                     })
         if scene is not authority:
@@ -846,13 +929,15 @@ def build(
                         "baseHeight": 0.0, "material": {"color": "#25343c", "roughness": 0.52},
                     }, {
                         "status": "accepted-inferred",
-                        "sources": [{
-                            "type": "posed-photo-and-elevation", "path": wall["evidence"]["path"],
-                            "sha256": wall["evidence"]["sha256"], "note": "repeated dark glazing frame family",
-                        }, {
-                            "type": "inference-basis", "path": "../geometry-workspace/structural-proposals.json",
-                            "sha256": _sha256(proposals_path), "note": "current-capture glass facade axis",
-                        }],
+                        "sources": [base._evidence_source(
+                            "posed-photo-and-elevation", wall["evidence"]["path"],
+                            wall["evidence"]["sha256"], "author-picks",
+                            note="repeated dark glazing frame family",
+                        ), base._evidence_source(
+                            "inference-basis", proposals_rel, _sha256(proposals_path),
+                            "structural-proposals", [root_sha],
+                            note="current-capture glass facade axis",
+                        )],
                         "reason": "repeated glazing-frame family inferred from panorama and indexed structural alignment",
                     })
     for scene in (hypothesis, presentation):
@@ -862,23 +947,27 @@ def build(
             "name": "Main scanned office envelope", "polygon": floor_polygon,
             "zoneKind": "occupied-office", "confidence": 0.70,
         }, {"status": "accepted-inferred", "sources": [
-            {"type": "floor-support", "path": "evidence/cleanroom-floor-support.png",
-             "sha256": _sha256(output / "evidence" / "cleanroom-floor-support.png")},
-            {"type": "indexed-evidence-manifest", "path": "../geometry-workspace/evidence/evidence-manifest.json",
-             "sha256": _sha256(workspace / "evidence" / "evidence-manifest.json")},
+            base._evidence_source(
+                "floor-support", "evidence/cleanroom-floor-support.png",
+                _sha256(output / "evidence" / "cleanroom-floor-support.png"),
+                "cleanroom-macro-builder", [root_sha],
+                generator_parameters={"artifact": "floor-support"},
+            ),
+            base._evidence_source(
+                "indexed-evidence-manifest",
+                base._relative_scene_path(workspace / "evidence" / "evidence-manifest.json", output),
+                _sha256(workspace / "evidence" / "evidence-manifest.json"),
+                "indexed-pointcloud-evidence", [root_sha],
+                generator_parameters={"artifact": "evidence-manifest"},
+            ),
         ], "reason": "display-only leveled scan envelope; not a closed authority space"})
         furniture_sha = _sha256(output / "evidence" / "furniture-support.png")
+        furniture_sources = _furniture_evidence_sources(furniture_sha, picks_payload, root_sha)
         for item_index in range(1, len(items) + 1):
             item_id = f"item_clean{item_index:03d}"
             scene["evidence"][item_id] = {
                 "status": "accepted-inferred",
-                "sources": [
-                    {"type": "tabletop-height-support", "path": "evidence/furniture-support.png", "sha256": furniture_sha,
-                     "note": "instance position is a raw height-band proposal; not a measured furniture receipt"},
-                    {"type": "posed-photo-family", "path": "undistort/right/1776746265873142016.jpg",
-                     "sha256": "31eaab17fd67e4b69fd1405a9d2e44c1da8b9f26180d6b2503c9d9a7e1421956",
-                     "note": "photo proves repeated workstation/table family, not this exact instance"},
-                ],
+                "sources": json.loads(json.dumps(furniture_sources)),
                 "reason": "visual-inferred furniture pending instance-level raw fit and collision review",
             }
 

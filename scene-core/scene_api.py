@@ -9,7 +9,13 @@ Acceptance is fail-closed:
 - accept --mode measured requires at least one evidence source whose file
   exists next to the scene and whose sha256 matches the ledger.
 - accept --mode inferred requires a reason plus at least two verified files
-  with distinct content hashes and root lineages.
+  with distinct content hashes and distinct derivation lineages.  A lineage is
+  the generator identity (producer plus generator-parameter fingerprint) applied
+  to the root inputs, so two different derivations of the same raw capture
+  (different bands, sections, projections) legitimately count as independent,
+  while a copied file or a same-parameter re-run of one generator does not.
+  Shared roots alone no longer block acceptance; they are surfaced as
+  informational data in the quality report.
 - Acceptance requires an independent read-only reviewer execution and stores a
   claimHash that becomes stale when geometry, topology or a host changes.
 
@@ -197,6 +203,28 @@ def _accepted_source_digest(sources: list[dict]) -> str:
     return _canonical_digest(normalized)
 
 
+def evidence_lineage_id(
+    root_content_sha256s: list[str],
+    producer: str | None,
+    generator_parameters: object = None,
+) -> str:
+    """Fingerprint of a derivation pipeline: roots + generator identity.
+
+    Purely geometric captures only ever have one root (the raw LAS), so the
+    lineage must distinguish generators, not roots.  Different producers or
+    different generator parameters over the same root are distinct lineages;
+    the same generator with the same parameters is not, which keeps
+    same-parameter re-runs from counting as independent evidence.
+    """
+    return _canonical_digest(
+        {
+            "rootContentSha256s": sorted(set(root_content_sha256s)),
+            "producer": producer,
+            "generatorParameters": generator_parameters,
+        }
+    )
+
+
 def has_two_independent_sources(sources: list[dict]) -> bool:
     verified = [
         source
@@ -205,14 +233,30 @@ def has_two_independent_sources(sources: list[dict]) -> bool:
         and source.get("lineageId")
         and source.get("rootContentSha256s")
     ]
+    # Root overlap is deliberately NOT a rejection criterion: every derived
+    # artifact of a pure point-cloud capture shares the same LAS root, which
+    # would make accepted-inferred structurally unreachable.  Independence is
+    # distinct content plus distinct derivation lineage.
     for index, first in enumerate(verified):
-        first_roots = set(first["rootContentSha256s"])
         for second in verified[index + 1:]:
             if (
                 first.get("contentSha256") != second.get("contentSha256")
                 and first.get("lineageId") != second.get("lineageId")
-                and first_roots.isdisjoint(set(second["rootContentSha256s"]))
             ):
+                return True
+    return False
+
+
+def sources_share_roots(sources: list[dict]) -> bool:
+    """Informational: do any two verified sources share a root input hash?"""
+    root_sets = [
+        set(source.get("rootContentSha256s") or [])
+        for source in sources
+        if source.get("contentSha256")
+    ]
+    for index, first in enumerate(root_sets):
+        for second in root_sets[index + 1:]:
+            if first & second:
                 return True
     return False
 
@@ -689,6 +733,7 @@ def op_attach_evidence(scene: dict, scene_path: Path, args: dict) -> dict:
             content_digest = hashlib.sha256(evidence_file.read_bytes()).hexdigest()
             source["sha256"] = content_digest
             source["contentSha256"] = content_digest
+            generator_parameters = args.get("generatorParameters")
             receipt_path = args.get("provenanceReceipt")
             if receipt_path:
                 receipt_file = resolve_evidence_file(scene_path, receipt_path)
@@ -712,13 +757,18 @@ def op_attach_evidence(scene: dict, scene_path: Path, args: dict) -> dict:
                     "sha256": hashlib.sha256(receipt_file.read_bytes()).hexdigest(),
                 }
                 source["producer"] = receipt.get("producer") or args.get("producer")
+                # A receipt is the authoritative record of how the file was
+                # generated; caller-supplied parameters cannot override it.
+                generator_parameters = receipt.get("generatorParameters")
             else:
                 source["rootContentSha256s"] = [content_digest]
                 source["producer"] = args.get("producer")
             if not source.get("producer"):
                 raise SceneError(f"EVIDENCE_PRODUCER_REQUIRED:{args['path']}")
-            source["lineageId"] = _canonical_digest(
-                {"rootContentSha256s": source["rootContentSha256s"]}
+            if generator_parameters is not None:
+                source["generatorParameters"] = generator_parameters
+            source["lineageId"] = evidence_lineage_id(
+                source["rootContentSha256s"], source["producer"], generator_parameters,
             )
             supplied_lineage = args.get("lineageId")
             if supplied_lineage and supplied_lineage != source["lineageId"]:
@@ -1154,6 +1204,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source-role")
     p.add_argument("--producer")
     p.add_argument("--provenance-receipt")
+    p.add_argument("--generator-parameters",
+                   help="JSON object fingerprinting the derivation parameters (ignored when a receipt is supplied)")
     p.add_argument("--note")
     p.add_argument("--allow-missing", action="store_true")
 
@@ -1327,6 +1379,9 @@ def main(argv: list[str] | None = None) -> int:
                 "id": args.id, "type": args.type, "path": args.path,
                 "sourceRole": args.source_role, "producer": args.producer,
                 "provenanceReceipt": args.provenance_receipt,
+                "generatorParameters": (
+                    json.loads(args.generator_parameters) if args.generator_parameters else None
+                ),
                 "note": args.note, "allow_missing": args.allow_missing,
             }),
             "accept": lambda: op_accept(scene, scene_path, {

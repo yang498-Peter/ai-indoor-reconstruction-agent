@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import math
@@ -242,6 +243,60 @@ class SceneApiTest(unittest.TestCase):
             "id": "wall_test01", "mode": "inferred", "reviewerIdentity": REVIEWER, "reason": "mirror of east wing",
         })
         self.assertEqual(entry["status"], "accepted-inferred")
+
+    def _attach_with_receipt(self, wall_id, name, content, roots, producer, parameters=None):
+        (self.root / name).write_bytes(content)
+        receipt_name = f"{name}.provenance.json"
+        receipt = {
+            "outputContentSha256": hashlib.sha256(content).hexdigest(),
+            "rootContentSha256s": roots,
+            "producer": producer,
+        }
+        if parameters is not None:
+            receipt["generatorParameters"] = parameters
+        (self.root / receipt_name).write_text(json.dumps(receipt), encoding="utf-8")
+        return api.op_attach_evidence(self.scene, self.scene_path, {
+            "id": wall_id, "type": "derived", "path": name,
+            "provenanceReceipt": receipt_name,
+        })
+
+    def test_accept_inferred_from_two_derivations_of_one_root(self):
+        # New lineage rule: the derivation pipeline identity (producer +
+        # generator parameters), not root disjointness, defines independence.
+        self.make_wall()
+        root = "e" * 64
+        self._attach_with_receipt(
+            "wall_test01", "band-a.bin", b"band a", [root],
+            "pointcloud-evidence", {"band": [0.3, 0.9]})
+        self._attach_with_receipt(
+            "wall_test01", "band-b.bin", b"band b", [root],
+            "pointcloud-evidence", {"band": [1.8, 2.4]})
+        sources = self.scene["evidence"]["wall_test01"]["sources"]
+        self.assertNotEqual(sources[0]["lineageId"], sources[1]["lineageId"])
+        entry = api.op_accept(self.scene, self.scene_path, {
+            "id": "wall_test01", "mode": "inferred", "reviewerIdentity": REVIEWER,
+            "reason": "two band derivations of one capture",
+        })
+        self.assertEqual(entry["status"], "accepted-inferred")
+        api.validate_scene(self.scene)
+
+    def test_accept_inferred_rejects_same_parameter_rerun(self):
+        self.make_wall()
+        root = "e" * 64
+        self._attach_with_receipt(
+            "wall_test01", "run-a.bin", b"run a bytes", [root],
+            "pointcloud-evidence", {"band": [0.3, 0.9]})
+        self._attach_with_receipt(
+            "wall_test01", "run-b.bin", b"run b bytes", [root],
+            "pointcloud-evidence", {"band": [0.3, 0.9]})
+        sources = self.scene["evidence"]["wall_test01"]["sources"]
+        self.assertEqual(sources[0]["lineageId"], sources[1]["lineageId"])
+        with self.assertRaises(api.SceneError) as ctx:
+            api.op_accept(self.scene, self.scene_path, {
+                "id": "wall_test01", "mode": "inferred", "reviewerIdentity": REVIEWER,
+                "reason": "same pipeline twice",
+            })
+        self.assertIn("INFERRED_NEEDS_TWO_DISTINCT_SOURCES", str(ctx.exception))
 
     def test_geometry_update_invalidates_acceptance(self):
         self.make_wall()

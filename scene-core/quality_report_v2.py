@@ -189,6 +189,7 @@ def evaluate_scene(
     claims_current = True
     accepted_source_digests_current = True
     evidence_lineages_distinct = True
+    shared_root_count = 0
     for node_id, entry in accepted_entries:
         try:
             current_claim = api.claim_payload(scene, node_id)
@@ -211,6 +212,11 @@ def evaluate_scene(
                 or not api.has_two_independent_sources(sources)
             ):
                 evidence_lineages_distinct = False
+            # Shared roots are expected for pure point-cloud captures (every
+            # derived artifact descends from one LAS); they inform the
+            # reviewer but never fail the report.
+            if api.sources_share_roots(sources):
+                shared_root_count += 1
     if not claims_current:
         errors.append("ACCEPTED_CLAIMS_STALE")
     if not accepted_source_digests_current:
@@ -273,6 +279,7 @@ def evaluate_scene(
         "claimsCurrent": claims_current,
         "acceptedSourceDigestsCurrent": accepted_source_digests_current,
         "evidenceLineagesDistinct": evidence_lineages_distinct,
+        "sharedRootCount": shared_root_count,
         "reviewIdentityValid": review_identity_valid,
         "reviewIdentityIndependent": review_identity_independent,
         "reviewBindingCurrent": review_binding_valid,
