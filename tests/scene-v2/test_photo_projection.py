@@ -229,8 +229,10 @@ class WallWireframeTests(unittest.TestCase):
         self.assertEqual(wire["outline"][0], [0.0, 0.0, 0.0])
         self.assertEqual(wire["outline"][2], [4.0, 0.0, 3.0])
         rect = wire["openings"][0]["rect"]
-        self.assertEqual(rect[0], [1.0, 0.0, 0.5])  # sill 1.0 + (-0.5)
-        self.assertEqual(rect[2], [2.0, 0.0, 1.7])
+        # hostOffsetM=1.0 is the opening CENTER (scene_api convention):
+        # width 1.0 spans along-wall 0.5..1.5. Sill 1.0 + ground_z(-0.5).
+        self.assertEqual(rect[0], [0.5, 0.0, 0.5])
+        self.assertEqual(rect[2], [1.5, 0.0, 1.7])
 
 
 class LoadFramesTests(unittest.TestCase):
