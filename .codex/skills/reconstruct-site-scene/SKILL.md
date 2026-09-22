@@ -1,9 +1,19 @@
 ---
 name: reconstruct-site-scene
-description: Reconstruct an outdoor or mixed site capture (building exteriors, porches, roofs, trees, vehicles, fences) from a local colored LAS into an evidence-backed Semantic Scene V2 with live visualization. Use when the capture is a building site, yard, campus or any scene where reconstruct-indoor-scene fails closed on outdoor/mixed domains. Works with weak or strong agents: every judgment is pinned by a tool output and a gate, so following the steps mechanically still produces a defensible scene.
+description: Reconstruct an outdoor or mixed site capture (building exteriors, porches, roofs, trees, vehicles, fences) from a local colored LAS into an evidence-backed Semantic Scene V2 with live visualization. Use when the capture is a building site, yard, campus or any scene where reconstruct-indoor-scene fails closed on outdoor/mixed domains. Separates presentation reconstruction from measured authority and independent acceptance.
 ---
 
 # Reconstruct Site Scene (outdoor / mixed)
+
+## Select presentation or strict authority
+
+For a customer-facing webpage reconstruction, apply the outdoor evidence and measurement sections below together with [the canonical refinement and delivery checks](../../../.agents/skills/reconstruct-indoor-scene/references/refinement-and-delivery.md). Use a capture-specific geometry producer and separate source-bound presentation artifacts; do not create or accept authority elements merely to render the scene. Keep scanned facades, inferred roofs/returns and unscanned interiors distinct. Room ceilings are not roof surfaces; use gable/end-wall sections and photographs to establish the outside roof profile.
+
+For measured Semantic Scene V2 acceptance or publication, the scene_api and independent-review requirements below apply. A well-rendered presentation cannot satisfy those gates. Do not reinstall dependencies that are already available; probe the required command/import first.
+
+Mixed captures often need separate outdoor ground and indoor floor planes. Verify transitions locally, keep equipment/vehicle dimensions tied to full-resolution returns, and group observed objects individually. Exclude people and transient clutter from a cleaned demonstration when requested; retain major fixed equipment and photo-supported objects. Do not use a scan bounding rectangle or camera path as the measured site boundary.
+
+For a twisted completed facade, driving camera or promotional flag, use [interactive showcase polish](../../../.agents/skills/reconstruct-indoor-scene/references/interactive-showcase-polish.md). For an authorized deployment, use [delivery verification](../../../.agents/skills/reconstruct-indoor-scene/references/delivery-verification.md). Preserve the measured facade direction while completing returns in one shared local frame; never force the entire capture onto world axes merely to make an inferred corner square.
 
 The pipeline is: evidence -> candidates -> measurement -> assembly through
 scene_api -> live view -> adversarial review -> fix loop. Algorithms only

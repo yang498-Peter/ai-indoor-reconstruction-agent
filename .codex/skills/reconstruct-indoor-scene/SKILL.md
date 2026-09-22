@@ -5,6 +5,16 @@ description: Reconstruct an indoor scene from local colored point clouds, scanne
 
 # Reconstruct Indoor Scene
 
+## Outcome routing (canonical skill compatibility)
+
+For an explicitly presentation-only webpage or inferred visual completion request, use [the canonical fast presentation workflow](../../../.agents/skills/reconstruct-indoor-scene/references/presentation-fast-path.md). Its source-bound cached measurements and visual baseline replace the authority acceptance sequence for that separate output only. Keep existing authority artifacts and gate status unchanged; do not call a demo a measured or independently accepted scene. For strict Scene V2 work, the authority workflow below remains applicable. Never transfer the Office 0421 coordinates or conclusions to a new capture.
+
+For exhibition details, supplied logos, interactive doors/tours and collection integration, read [the canonical exhibition reference](../../../.agents/skills/reconstruct-indoor-scene/references/exhibition-and-collection.md). Keep reusable refinements there rather than duplicating them in this compatibility skill.
+
+For furniture refinement and customer-facing copy, read [refinement and delivery](../../../.agents/skills/reconstruct-indoor-scene/references/refinement-and-delivery.md). For exterior/cockpit/lettering corrections, use [interactive showcase polish](../../../.agents/skills/reconstruct-indoor-scene/references/interactive-showcase-polish.md); for authorized server updates, use [delivery verification](../../../.agents/skills/reconstruct-indoor-scene/references/delivery-verification.md). These are conditional presentation checks, not extra authority gates.
+
+For presentation IFC exports and overlay in a BIM/point-cloud viewer, read [the source-frame BIM workflow](../../../.agents/skills/reconstruct-indoor-scene/references/bim-source-overlay.md). It covers importer material limits, semantic parts, coordinate round trips and actual import/reopen checks.
+
 Build the scene as an AI-supervised measurement and drawing workflow. Treat algorithms as measurement assistants, not decision makers. Keep every inference explicit and iterate until the rendered scene agrees with raw evidence.
 
 Read [references/orchestration-contract.md](references/orchestration-contract.md) before editing geometry. The pipeline owns completion; an author never self-certifies its own work.
@@ -59,6 +69,13 @@ If a capture lacks photos, continue with point-cloud geometry and mark material 
 ## Build evidence before geometry
 
 Read [references/evidence-and-geometry.md](references/evidence-and-geometry.md) before drawing building structure.
+
+When a capture contains panoramas or a long photo sequence, read
+[references/panorama-pointcloud-fusion.md](references/panorama-pointcloud-fusion.md).
+Use multi-frame visual consistency to recover semantic layout and repeated
+families; use the point cloud to constrain axes, scale, supported centroids and
+heights. Sparse scanning is not permission to omit photo-proven desks, seats or
+windows, and one distorted panorama is not permission to invent exact geometry.
 
 Generate these views from the full source cloud:
 
