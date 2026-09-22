@@ -1,0 +1,32 @@
+name: presentation-skill-tools
+
+on:
+  push:
+    paths:
+      - '.agents/skills/**'
+      - '.codex/skills/**'
+      - 'scripts/indoor_presentation_evidence.py'
+      - 'tests/test_presentation_*.py'
+      - '.github/workflows/presentation-skills.yml'
+  pull_request:
+    paths:
+      - '.agents/skills/**'
+      - '.codex/skills/**'
+      - 'scripts/indoor_presentation_evidence.py'
+      - 'tests/test_presentation_*.py'
+      - '.github/workflows/presentation-skills.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-tools:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pytest
+      - run: python scripts/validate_portable_repo.py
+      - run: python -m pytest -q tests/test_presentation_evidence_fast.py tests/test_presentation_delivery_inventory.py tests/test_presentation_brand_asset.py

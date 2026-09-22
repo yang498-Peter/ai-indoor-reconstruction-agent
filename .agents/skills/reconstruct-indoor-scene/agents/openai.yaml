@@ -1,0 +1,3 @@
+interface:
+  display_name: "Reconstruct Indoor Scene"
+  short_description: "Evidence-bound indoor reconstruction workflow"
