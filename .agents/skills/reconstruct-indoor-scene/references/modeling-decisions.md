@@ -49,13 +49,19 @@ If evidence disagrees, check frame mapping, image projection, time pairing, fore
 | Repeated furniture generator | Every instance/count and affected clearances/views | Shell measurements |
 | Materials, renderer, UI or camera | Affected browser views, counters, selection and fresh render evidence | Geometry evidence if geometry truly unchanged |
 | Collection card or return link only | Every changed entry, model readiness/identity, return path, preview loading and responsive layout | Unchanged geometry and motion checks; identify their older input bindings explicitly |
+| Exporter, target format or coordinate variant | Export fixtures, affected exchange files, import checks, package hashes and download checks | Unchanged source measurements and web geometry; rebind results to the actual input hash |
 
 For authority work the contract DAG determines invalidations. This table is an optimization guide, not permission to preserve stale acceptance receipts.
+
+For large multi-storey captures, separate the immutable source cache, calibrated local cache, regional observations and delivery candidate. Bind a transformed cache to source digest, units, complete transform and producer version; an unchanged LAS is not enough when levelling changed. Reuse matching rectified views and coordinate caches instead of re-reading the full capture for each wall. Batch adjacent wall/opening/floor questions within one verified cache load; use a memory-mapped or indexed cache when supported by the chosen tool. Record hash/transform time, query time, generation, export and browser checks separately so optimization targets the actual bottleneck. Existing `region` calls do not gain batch or indexing support merely by following this guidance.
+
+For wall-face audits, retain competing depth peaks, surface coverage along the wall, excluded apertures, sampling bands and the selected face's residual distribution. A small residual inside a hand-picked thin band can be circular evidence. Compare a wider or shifted region and independent wall lengths before changing geometry; insufficient support stays unresolved. Coordinate quantization, numeric round-trip error and a local review tolerance are three different things, none of which is independent survey accuracy. Do not carry a case's millimetre threshold into a new capture as an industry requirement.
 
 ## Tool use and recovery
 
 - Probe the needed tool using current `--help`; avoid broad dependency discovery or reinstalling a working environment. Old machine paths are hints, not portable instructions.
 - Run `prepare` on task intake/resume, then batch regional questions. The current helper hashes and loads the full NPZ on each region call; caching avoids LAS parsing/transform but is not a spatial index. Many large ROIs justify indexed services or a separately tested batch optimization, not removing hash checks.
+- For several axis-aligned model-face questions in the same cache, `scripts/presentation_alignment.py` verifies and loads once per batch. Use [the alignment reference](pointcloud-model-alignment.md) for explicit frame/node selection and limitations; this does not alter `region` or make the NPZ memory mapped.
 - Distinguish runtime failure from modeling failure. Inspect a permission/unavailable-tool error once, then use an authorized equivalent if available. Do not embed application-version-specific escalation binaries in reusable instructions or repeatedly invoke the same failing entrypoint.
 - For pytest temp-folder ACL errors, use a newly created isolated work directory and preserve assertions. Do not disable tests or delete shared caches.
 - Reuse one verified browser session. Confirm URL, served model identity, readiness and a completed foreground render. A queued open, HTTP 200 or previous screenshot does not prove the requested view.

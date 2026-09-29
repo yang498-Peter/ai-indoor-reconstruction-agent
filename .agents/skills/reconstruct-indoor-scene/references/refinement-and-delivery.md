@@ -1,6 +1,8 @@
 # Finish a measured presentation without repeating the same corrections
 
-Read for detailed furniture/circulation refinement, bilingual customer demonstrations, synchronized exchange models, or refinement after a first plausible model. Continue to use modeling-decisions.md for source and frame decisions. No3 and INTERGEO motivated these checks; their layouts, dimensions, object counts, tour paths and test totals are not defaults.
+Read for architectural/furniture refinement, bilingual customer demonstrations, synchronized exchange models, or refinement after a first plausible model. Continue to use modeling-decisions.md for source and frame decisions. No3, No4 and INTERGEO motivated these checks; their layouts, dimensions, object counts, tour paths and test totals are not defaults.
+
+When the user finds obvious overlay errors, follow [pointcloud-model-alignment.md](pointcloud-model-alignment.md) before further polish. A supported wall audit can still be fitting a cabinet, window frame or the wrong side of a wall return.
 
 For exterior-frame, vehicle-camera and flag-lettering corrections, read the relevant subsection of [interactive-showcase-polish.md](interactive-showcase-polish.md). For release inventory/delta checks and actual-origin parity, read [delivery-verification.md](delivery-verification.md). Ordinary furniture edits do not need driving or deployment checks.
 
@@ -37,6 +39,10 @@ Top-down alone cannot verify feet or canopy height. Pair a plan/overlay with an 
 
 Inspect the connections beyond the main room before declaring coverage complete. Use local wall elevations and low/mid/high continuity for each door region; keep visible opening bounds, leaf width, frame, jamb and header separate. Far sparse returns support only what is visible. Record regularized widths and lighting spacing; do not populate unseen adjacent rooms.
 
+Before furniture finishes, distinguish the exposed interior wall face, concealed wall thickness, window/frame plane, sill and reveal depth. A recessed window can have strong point support on a different plane from its surrounding masonry. Check several heights and neighbouring wall lengths, then change the shared host parameters and dependent jambs, doors, slabs and cutaways together. Do not pull a measured frame onto the wall plane to improve a residual, or infer both wall faces from a single visible surface.
+
+Fit a connected corridor's own long axis and floor patches when they differ from the main rooms; keep their common capture transform and physical connection. Regularize each door only within its observed opening. A corridor is a space on its actual building storey, not an extra storey because the viewer assigns it a context/group index. Check landings, slab outlines and the stair void against the corrected shell before furnishing. Full-resolution cloud bounds and visible continuations determine extent, not the smaller preview crop.
+
 Define the door hinge in leaf-local coordinates relative to a named viewing side. Verify the closed transform, fixed pivot, swing clearance and direct click after rotating the assembly into display space. If walkthrough is present, a closed door must not be treated like an always-open gap. Keep motion and collision claims proportional to implemented checks.
 
 ## Multilingual demonstrations and artifact parity
@@ -45,7 +51,11 @@ For requested languages (including Chinese, English or German), translate the wh
 
 Keep geometry in one producer and regenerate dependent exports and audit records from the same scene revision. Bind model, renderer/UI, preview and exchange-file hashes. A screenshot from a previous model or a download from a different revision is a delivery defect even if each file opens.
 
-For a requested SketchUp exchange, a named COLLADA hierarchy can be useful but is not a native SKP or construction-ready BIM claim. Preserve metre units, handedness, explicit up-axis mapping, logical component names, texture references and instance transforms. Check that texture and base-colour multiplication survive the importer representation; package actual textures beside the DAE and validate ZIP paths. Report actual desktop import separately. For IFC, use bim-source-overlay.md and retain source-coordinate round trips.
+For a requested SketchUp exchange, first probe a usable native application or official SDK and the receiving version. If native SKP is unavailable, continue independent modelling/IFC work and state the precise alternative: a COLLADA DAE plus textures package, subject to the target version's import support. Honour an agreed deferral without repeatedly asking for an installation; never rename DAE to SKP or claim that an independent loader proves SketchUp desktop import. Do not upload a private capture to a conversion service without authorization.
+
+Preserve units, handedness, explicit up-axis mapping, logical component names, texture references and instance transforms in COLLADA. Check that texture and base-colour multiplication survive the importer representation. Validate unique XML IDs, references, finite coordinates, index ranges, triangle counts and geometry against the source; verify relative texture and ZIP paths, then independently load/render the package. Package instructions should explain extraction, DAE import and later Save As SKP; keep actual desktop import as a distinct result. For IFC, use [bim-source-overlay.md](bim-source-overlay.md).
+
+Settle shell topology and verify the local visual candidate before the final multi-format export. Export one frozen scene revision to the requested formats, regenerate previews, then build the download manifest/package. Geometry changes invalidate its exports and geometry screenshots; a label-only fix does not justify rebuilding the cloud or unchanged IFC. A complete exchange package can include model files, a component schedule, coordinate transform, verification summary and concise limitations; raw point clouds, panoramas and internal paths are not default contents. Exercise real browser download behaviour and hash-check served bytes for every delivered format against the validated candidate.
 
 ## Customer-facing copy
 

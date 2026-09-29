@@ -14,7 +14,7 @@
 ## 新电脑快速开始
 
 ```powershell
-git clone <PRIVATE_REPOSITORY_URL>
+git clone https://github.com/yang498-Peter/ai-indoor-reconstruction-agent.git
 Set-Location ai-indoor-reconstruction-agent
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -85,6 +85,8 @@ V2 报告按墙输出 `(s,h)` 面积覆盖、真实最长连续无支撑段、�
 
 详细流程见 [docs/WORKFLOW.zh-CN.md](docs/WORKFLOW.zh-CN.md)，迁移边界见 [docs/PORTABILITY.zh-CN.md](docs/PORTABILITY.zh-CN.md)。
 
+展示精修、点云对齐和 BIM 回读的依赖与零数据验证见[跨电脑迁移](docs/PORTABILITY.zh-CN.md)。代理入口为 [.agents/skills/reconstruct-indoor-scene/SKILL.md](.agents/skills/reconstruct-indoor-scene/SKILL.md)，常用操作见[室内建模 SOP](docs/室内建模准确性与快速交付SOP.zh-CN.md)。新电脑先运行合成冒烟，再接入自己的采集数据；它不自动复现某个客户场景。
+
 ## 验证
 
 ```powershell
@@ -94,4 +96,4 @@ python tests/scene-v2/test_scene_api.py
 node --test tests/scene-v2/scene-core.test.mjs
 ```
 
-本仓库默认作为私有协作项目。没有数据收集授权前，不要提交客户原图、原始点云、注册码、API Token 或包含个人目录的绝对路径。
+本仓库为公开的流程与工具仓库。客户原图、点云、场景专属模型和精确布局、注册码、API Token 及个人目录不进入 Git；私有数据通过独立授权渠道管理。
