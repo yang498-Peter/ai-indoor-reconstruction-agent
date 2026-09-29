@@ -17,13 +17,15 @@ For a webpage demonstration, visual reconstruction, or explicit permission to in
 
 For exhibition counters, screen/door corrections, supplied branding, automatic tours, or joining an existing model collection, read [references/exhibition-and-collection.md](references/exhibition-and-collection.md). It adds regional checks and reusable asset inspection only when those details apply.
 
-For detailed furniture/corridor refinement, bilingual customer demonstrations, or synchronized model/download delivery, read [references/refinement-and-delivery.md](references/refinement-and-delivery.md). Apply only the relevant checks; keep measured accuracy and presentation acceptance distinct.
+For architectural/furniture refinement, connected corridors, bilingual demonstrations, or SketchUp exchange, read [references/refinement-and-delivery.md](references/refinement-and-delivery.md). Settle wall-face/reveal topology and export capability before detailed finishes; apply only relevant checks and keep measured accuracy separate from presentation acceptance.
+
+For a model that visibly disagrees with its cloud, use [pointcloud-model-alignment.md](references/pointcloud-model-alignment.md). On another computer, start with the [portable setup and smoke](../../../docs/PORTABILITY.zh-CN.md) before loading customer data.
 
 For exterior corrections, driving/cockpit interaction or promotional lettering, read only the matching section of [references/interactive-showcase-polish.md](references/interactive-showcase-polish.md). For an authorized server update or checking that other models stayed unchanged, use [references/delivery-verification.md](references/delivery-verification.md).
 
 For measured authority, independent acceptance, evaluation or immutable publication, use the strict workflow below. If both outcomes are requested, keep their artifacts and completion statements separate. User corrections to names and observed semantics are inputs, not measured dimensions.
 
-For presentation IFC exports and overlay in a BIM/point-cloud viewer, read [the source-frame BIM workflow](references/bim-source-overlay.md). It covers importer material limits, semantic parts, coordinate round trips and actual import/reopen checks.
+For presentation IFC exports and overlay in a BIM/point-cloud viewer, read [the source-frame BIM workflow](references/bim-source-overlay.md). Test a small representative export before the full scene, then deliver source-bound architectural solids, semantic parts and verified coordinate variants. Schema, receiving-software import and dimensional acceptance remain separate results.
 
 ## Strict authority workflow
 

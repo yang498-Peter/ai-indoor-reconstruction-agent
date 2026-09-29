@@ -1,0 +1,6 @@
+# Optional detailed mesh generation and BIM readback environment.
+-c constraints-presentation-py312.txt
+-r requirements.txt
+trimesh==4.12.2
+ifcopenshell==0.8.5
+lazrs>=0.6,<1
