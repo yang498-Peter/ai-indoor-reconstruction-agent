@@ -2,6 +2,8 @@
 
 Read when exporting a reconstructed presentation into IFC for a receiving BIM/point-cloud viewer. This route does not certify measured authority or parametric construction design.
 
+If the user requires native Revit/Archicad editing or storey-linked height behavior, first route through [native-bim-editability.md](native-bim-editability.md). Establish the intended native operations and test a small receiving-app sample before applying viewer-oriented material/geometry workarounds or bulk exporting. IFC class, host and storey metadata are necessary exchange intent, not proof of native editing or dynamic links.
+
 ## Bind geometry to the receiving coordinate frame
 
 Inspect the actual importer before choosing an IFC dialect and geometry representation. The current MVPStudio worker is `cloudstudio-windows/web-uploader/scripts/ifc_worker.py`; it accepts IFC2X3/IFC4, metre-normalizes geometry, uses world coordinates and rebases its cache around a model origin. Recheck this contract on later versions.
