@@ -2,6 +2,8 @@
 
 Use after an overlay exposes offsets in fixed objects, openings or furniture. This is a presentation correction method, not a new authority gate. Reuse unchanged source evidence; do not decorate before resolving the discrepancy.
 
+For numerical per-face review or heatmaps, also use [surface-deviation-reporting.md](surface-deviation-reporting.md). Report support, fit residuals and cloud-to-model distances separately; the batch observation tool below does not itself perform that analysis. Occluded or ambiguous faces cannot be certified by visual agreement or a blanket zero-error claim.
+
 ## Separate registration errors from authoring errors
 
 First verify the source identity, complete levelling/origin matrix, display mapping and the actual loaded model. Compare preview points with the declared full-cloud sampling transform. A uniform offset across unrelated surfaces suggests registration; individually wrong objects with aligned floors and surrounding walls need producer corrections. Do not translate the whole building to fix one cabinet.

@@ -15,6 +15,8 @@ For furniture refinement and customer-facing copy, read [refinement and delivery
 
 For presentation IFC exports and overlay in a BIM/point-cloud viewer, read [the source-frame BIM workflow](../../../.agents/skills/reconstruct-indoor-scene/references/bim-source-overlay.md). It covers importer material limits, semantic parts, coordinate round trips and actual import/reopen checks.
 
+For per-face numerical alignment, wall/floor heatmaps and reports, read [surface deviation reporting](../../../.agents/skills/reconstruct-indoor-scene/references/surface-deviation-reporting.md). For editable Revit/Archicad components and storey-linked heights, read [native BIM editability](../../../.agents/skills/reconstruct-indoor-scene/references/native-bim-editability.md). Keep native edit tests separate from IFC schema checks; these conditional procedures do not replace authority gates.
+
 Build the scene as an AI-supervised measurement and drawing workflow. Treat algorithms as measurement assistants, not decision makers. Keep every inference explicit and iterate until the rendered scene agrees with raw evidence.
 
 Read [references/orchestration-contract.md](references/orchestration-contract.md) before editing geometry. The pipeline owns completion; an author never self-certifies its own work.
