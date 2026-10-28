@@ -90,6 +90,18 @@ def test_unicode_paths_and_existing_output_are_preserved(tmp_path: Path) -> None
     assert source.read_bytes() == before
 
 
+def test_regular_size_view_keeps_label_and_visible_image(tmp_path: Path) -> None:
+    source = tmp_path / "pano.png"
+    ok, encoded = cv2.imencode(".png", np.full((100, 200, 3), 180, dtype=np.uint8))
+    assert ok
+    source.write_bytes(encoded.tobytes())
+    output = tmp_path / "sheet.jpg"
+    MODULE.make_contact_sheet(source, output, yaws=[0], pitch=0, fov=90, width=320, height=160)
+    image = cv2.imdecode(np.frombuffer(output.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    assert int(image[2, 2, 0]) < 40
+    assert int(image[-1, -1, 0]) > 160
+
+
 def test_cli_rejects_output_collision_before_writing(tmp_path: Path) -> None:
     first = tmp_path / "room.jpg"
     second = tmp_path / "room-rectilinear.jpg"
@@ -129,3 +141,6 @@ def test_cli_writes_single_view_to_fresh_directory(tmp_path: Path) -> None:
     assert Path(json.loads(result.stdout.decode("ascii"))) == output_image
     image = cv2.imdecode(np.frombuffer(output_image.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     assert image.shape == (20, 30, 3)
+    # Small output must retain the projected image instead of being entirely
+    # covered by the fixed-size yaw label.
+    assert int(image[-1, -1, 0]) >= 70

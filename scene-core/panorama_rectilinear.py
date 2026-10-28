@@ -98,17 +98,20 @@ def make_contact_sheet(
             width=width,
             height=height,
         )
-        cv2.rectangle(view, (0, 0), (260, 38), (20, 20, 20), thickness=-1)
-        cv2.putText(
-            view,
-            f"yaw {yaw:g} deg",
-            (12, 27),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.72,
-            (245, 245, 245),
-            2,
-            cv2.LINE_AA,
-        )
+        # A fixed-size label would obscure nearly all of a small output.
+        # Record angles separately when the requested view is too small.
+        if width >= 160 and height >= 80:
+            cv2.rectangle(view, (0, 0), (min(260, width - 1), 38), (20, 20, 20), thickness=-1)
+            cv2.putText(
+                view,
+                f"yaw {yaw:g} deg",
+                (12, 27),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.72,
+                (245, 245, 245),
+                2,
+                cv2.LINE_AA,
+            )
         views.append(view)
     rows = [np.hstack(views[index : index + 2]) for index in range(0, len(views), 2)]
     if len(views) > 1 and len(views) % 2:

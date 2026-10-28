@@ -95,7 +95,8 @@ the panorama. Positive pitch looks up. These are image coordinates, not world
 headings; bind them to a validated camera pose before associating a source
 region. The tool wraps longitude at the seam and handles poles separately. It
 refuses existing or colliding output paths and does not overwrite inputs. Each
-output path is printed as an ASCII-safe JSON string, one per line.
+output path is printed as an ASCII-safe JSON string, one per line. Very small
+views omit the on-image yaw label to avoid obscuring the evidence.
 Record the source hash, yaw, pitch, horizontal field of view, output dimensions
 and output hash in the evidence record; they are not embedded as provenance in
 the JPEG. Projection does not perform recognition or validate a camera pose.
