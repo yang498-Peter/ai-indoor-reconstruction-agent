@@ -8,6 +8,7 @@ human review and does not infer geometry or semantic labels.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -158,7 +159,9 @@ def main() -> int:
             width=args.width,
             height=args.height,
         )
-        print(output_path)
+        # ASCII-safe JSON preserves the full path even on a legacy Windows
+        # console encoding, without reporting a successful write as failure.
+        print(json.dumps(str(output_path), ensure_ascii=True))
     return 0
 
 

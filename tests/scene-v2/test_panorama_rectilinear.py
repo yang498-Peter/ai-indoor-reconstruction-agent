@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -120,8 +122,10 @@ def test_cli_writes_single_view_to_fresh_directory(tmp_path: Path) -> None:
     source.write_bytes(encoded.tobytes())
     output = tmp_path / "views"
     result = subprocess.run([sys.executable, str(SCRIPT), str(source), "--output-dir", str(output),
-                             "--yaws", "0", "--width", "30", "--height", "20"], capture_output=True)
+                             "--yaws", "0", "--width", "30", "--height", "20"], capture_output=True,
+                            env={**os.environ, "PYTHONIOENCODING": "cp1252"})
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     output_image = output / "输入-rectilinear.jpg"
+    assert Path(json.loads(result.stdout.decode("ascii"))) == output_image
     image = cv2.imdecode(np.frombuffer(output_image.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     assert image.shape == (20, 30, 3)
