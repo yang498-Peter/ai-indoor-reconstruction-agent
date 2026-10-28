@@ -82,9 +82,21 @@ or orientation.
 
 ## Reusable helper
 
-When the checkout contains `scene-core/panorama_rectilinear.py`, inspect its
-current help and projection contract before using it for rectilinear evidence
-sheets. Otherwise use an available verified panorama projection tool; do not
-assume a capture-specific helper was distributed with this skill. Preserve the
-input panorama hash, heading, pitch and field of view in the evidence record.
-Projection does not perform recognition or validate a camera pose.
+The checked-in `scene-core/panorama_rectilinear.py` projects equirectangular
+images into labelled JPEG contact sheets. Inspect its current help, then use a
+fresh output directory outside the read-only capture:
+
+```powershell
+python scene-core/panorama_rectilinear.py <panorama.jpg> --output-dir <work>/views --yaws 0,90,180,270 --pitch 0 --fov 95
+```
+
+Yaw zero points to the image's horizontal centre; positive yaw moves right in
+the panorama. Positive pitch looks up. These are image coordinates, not world
+headings; bind them to a validated camera pose before associating a source
+region. The tool wraps longitude at the seam and handles poles separately. It
+refuses existing or colliding output paths and does not overwrite inputs. Each
+output path is printed as an ASCII-safe JSON string, one per line. Very small
+views omit the on-image yaw label to avoid obscuring the evidence.
+Record the source hash, yaw, pitch, horizontal field of view, output dimensions
+and output hash in the evidence record; they are not embedded as provenance in
+the JPEG. Projection does not perform recognition or validate a camera pose.
