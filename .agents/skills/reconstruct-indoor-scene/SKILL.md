@@ -19,6 +19,8 @@ For exhibition counters, screen/door corrections, supplied branding, automatic t
 
 For architectural/furniture refinement, connected corridors, bilingual demonstrations, or SketchUp exchange, read [references/refinement-and-delivery.md](references/refinement-and-delivery.md). Settle wall-face/reveal topology and export capability before detailed finishes; apply only relevant checks and keep measured accuracy separate from presentation acceptance.
 
+For room-by-room residential correction, missing stair-adjacent spaces, courtyard completion or interactive doors and walking, read [residential-topology-and-walkthrough.md](references/residential-topology-and-walkthrough.md). Review connections as well as rooms, and verify the exported geometry and real movement route.
+
 For a model that visibly disagrees with its cloud, use [pointcloud-model-alignment.md](references/pointcloud-model-alignment.md). On another computer, start with the [portable setup and smoke](../../../docs/PORTABILITY.zh-CN.md) before loading customer data.
 
 For per-face numerical alignment, wall/floor heatmaps or deviation reports, read [surface-deviation-reporting.md](references/surface-deviation-reporting.md). Separate fitted-surface variation, cloud-to-model disagreement and construction acceptance; unsupported faces remain explicit.
@@ -30,6 +32,8 @@ For measured authority, independent acceptance, evaluation or immutable publicat
 For presentation IFC exports and overlay in a BIM/point-cloud viewer, read [the source-frame BIM workflow](references/bim-source-overlay.md). Test a small representative export before the full scene, then deliver source-bound architectural solids, semantic parts and verified coordinate variants. Schema, receiving-software import and dimensional acceptance remain separate results.
 
 For editable Revit/Archicad walls, slabs, hosted doors/windows, curtain-wall systems or storey-linked heights, read [native-bim-editability.md](references/native-bim-editability.md). Test native edits and actual storey changes early; IFC classes and properties alone do not prove these behaviors. Unexecuted receiving-app checks stay `NOT_RUN`.
+
+When turning display wall fragments into architectural IFC or debugging a failed export, use [ifc-authoring-recovery.md](references/ifc-authoring-recovery.md) for host reconstruction, numeric profile repair, shared types and solid-level readback. Its repairs do not upgrade native-editability or measurement acceptance.
 
 ## Strict authority workflow
 
