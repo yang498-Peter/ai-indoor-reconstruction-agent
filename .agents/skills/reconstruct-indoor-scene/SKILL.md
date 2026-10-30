@@ -25,6 +25,8 @@ For a model that visibly disagrees with its cloud, use [pointcloud-model-alignme
 
 For per-face numerical alignment, wall/floor heatmaps or deviation reports, read [surface-deviation-reporting.md](references/surface-deviation-reporting.md). Separate fitted-surface variation, cloud-to-model disagreement and construction acceptance; unsupported faces remain explicit.
 
+For multi-view image-edge fitting, held-out-view validation and read-only independent review, use [multiview-projection-loop.md](references/multiview-projection-loop.md). Freeze real image observations and splits before fitting; inspect pixel error separately from metric accuracy.
+
 For exterior corrections, driving/cockpit interaction or promotional lettering, read only the matching section of [references/interactive-showcase-polish.md](references/interactive-showcase-polish.md). For an authorized server update or checking that other models stayed unchanged, use [references/delivery-verification.md](references/delivery-verification.md).
 
 For measured authority, independent acceptance, evaluation or immutable publication, use the strict workflow below. If both outcomes are requested, keep their artifacts and completion statements separate. User corrections to names and observed semantics are inputs, not measured dimensions.
