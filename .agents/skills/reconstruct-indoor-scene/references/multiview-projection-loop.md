@@ -10,6 +10,8 @@ Keep source XYZ, authoring coordinates and final renderer coordinates explicit. 
 
 For every selected image, bind its full path, bytes SHA-256, native dimensions, projection model/intrinsics, camera-to-world pose and coordinate frame. The same frame basename may exist as a raw fisheye and an undistorted pinhole image; they need different intrinsics and pixel labels. Reuse a screening score only as a retrieval hint. Colour correlation, image dimensions, rigid pose matrices or known camera model names do not establish pixel-level calibration.
 
+Projected visibility and ray tests against the current model are retrieval hints, not proof that the photographed component is present. Independently inspect native fit and withheld images: a wall base, adjacent deck, vegetation or roof eave does not automatically observe a plinth edge, driveway, brick path or whole roof. Preserve missed and partially visible targets; do not manufacture observations from the proxy footprint.
+
 Check calibration on independent fixed features whose source coordinates and image locations are supported. Record the feature extraction/annotation method, residuals, uncertainty, view-specific scope and evidence hashes. Do not project the model being optimized back into the image and call its own corners calibration truth. `DIAGNOSTIC`/`UNVERIFIED` views may produce conditional diagnostics but cannot pass the tool's candidate gate; missing calibration is resolved by better evidence, not changing a status string.
 
 ### Check the camera without moving the target furniture
@@ -60,6 +62,8 @@ Use a separate actor/runId and the checked-in `reviewer-readonly-v1` policy in `
 
 Supply the frozen input, fit-report hash, source bindings, fit/holdout images and native-resolution overlays. The reviewer checks every selected input view for the reviewed object, correspondence/occlusion, calibration evidence and unexplained regressions. Verify the actual object geometry and adjacent walls/supports as well as the proxy; a visually good box may not move the detailed mesh correctly. A room/object coverage table retains unreviewed, rejected and unsupported items.
 
+Camera-side reasoning alone does not distinguish a long edge from a short end. Apply the source-ray correspondence audit above; the reviewer's role does not exempt its labels from checking.
+
 ```powershell
 python -X utf8 scripts/multiview_refinement.py report --fit-report <fit-report.json> --review <independent-review.json> --output <review-summary.json>
 ```
@@ -86,6 +90,12 @@ Check the entire producer chain for later reconstruction of the same object. Cor
 
 Separate source-support review from final-candidate review when the detailed producer adds inferred closures. Bind both reviews to the exact parameters, producer and frozen detailed artifacts. Compare all unaffected logical objects, architectural/floor bytes, exported bounds and exact wall intersections; rebind navigation to the final model and test a real approach to the changed obstacle. Preserve IFC product GUIDs and independently read back its changed element and attributes. Whole-assembly non-manifold contacts are different from an open individual solid. In photo comparisons use a proper depth buffer: average-depth triangle painting can manufacture apparent crossings. Keep a broken renderer's derivatives as invalid diagnostics and regenerate them through its producer.
 
+A source-supported appliance or insert may disappear behind an inaccurate host proxy. Measure and review the visible host face instead of moving the appliance forward to conceal the host error. Separate the observed face patch from inferred continuation, thickness and hidden backing; preserve coordinate uncertainty and any exceeded source bounds. Model-to-model overlap is a diagnostic, not proof of a capture error: built-ins and trim may intentionally embed. Report checked primitives and unsupported transforms separately, and never count an unsupported shape as zero collision.
+
 Rerun affected views and real interactions before replacing the website candidate. Use [delivery verification](delivery-verification.md) for final download hashes, protected routes and atomic publication. Public packages contain the authorized model and suitable aggregate results; raw images, cloud captures, internal annotations and machine paths stay local. Keep the untouched baseline available for comparison and rollback.
+
+Publish the model, display/selection metadata and navigation as one identity-bound set. A successful GLB download does not prove viewer initialization: stale `display-data.json` or navigation may correctly stop the viewer after the geometry loads. Verify each model identity, manifest asset hash and the actual public viewer's completed initialization, then exercise real controls. If runtime scripts are reused from a previous release, compare their actual bytes before relying on prior UI tests.
+
+After setting a test camera, wait for an actual render/matrix update before projecting a pointer location; check that the location is in the viewport and the door is visibly reachable. Fix camera, field of view, viewport and panel/view-offset state for before/after screenshots. Capture a transient collision reason while movement is active, then separately verify key release and walking exit; an idle frame may clear the last collision reason. These test setup checks do not authorize hiding an occluding model part to make an interaction pass.
 
 Report the full requested denominator, usable view coverage, fitted/rejected/unresolved objects, independent reviewer coverage, before/after errors and actual applied subset. Image-edge error, cloud-to-model discrepancy, visual quality, native BIM behaviour and physical accuracy are separate results. No single pixel score certifies the entire reconstructed room.
