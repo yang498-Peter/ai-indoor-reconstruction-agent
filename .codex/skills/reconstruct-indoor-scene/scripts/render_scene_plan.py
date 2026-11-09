@@ -100,7 +100,11 @@ def compile_scene_v2_for_review(scene: dict) -> dict:
             objects.append({
                 "id": node["id"], "category": node.get("category", "item"),
                 "center": [node["center"][0], node.get("elevation", 0), -node["center"][1]],
-                "yaw": -float(node.get("yaw", 0)), "size": list(node.get("size", [0, 0, 0])),
+                # planToDisplay maps source (x, y) to display (x, -y).
+                # Three.js rotation.y and the review box helper both consume the
+                # source CCW yaw directly; negating here mirrors furniture away
+                # from the wall axis in the static evidence render.
+                "yaw": float(node.get("yaw", 0)), "size": list(node.get("size", [0, 0, 0])),
                 "color": node.get("color", "#e3dfd2"), "layout": node.get("layout", {}),
                 "deliveryValidation": {"status": "PASS"}, "_atomicV2": True,
             })
@@ -121,7 +125,9 @@ def object_chairs(item: dict) -> list[np.ndarray]:
     center = np.asarray([float(item["center"][0]), float(item["center"][2])])
     positions: list[tuple[float, float]] = []
     if category == "workstation":
-        total = max(0, int(layout.get("seatCount", 4)))
+        total = max(0, int(layout.get(
+            "seatCount", 2 * int(layout.get("seatsPerSide", 2))
+        )))
         slots = math.ceil(total / 2) if total else 1
         clearance = min(0.58, max(0.42, float(layout.get("chairClearanceM", 0.56))))
         positions = [(-width / 2 + (index // 2 + 0.5) * width / slots,

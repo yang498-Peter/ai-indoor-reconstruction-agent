@@ -1,0 +1,18 @@
+[Unit]
+Description=Verified same-server backup of Tersus workspace
+After=tersus-workspace.service
+
+[Service]
+Type=oneshot
+User=tersus-workspace
+Group=tersus-workspace
+WorkingDirectory=/opt/tersus-workspace/current
+Environment=PYTHONIOENCODING=utf-8
+Environment=LANG=C.UTF-8
+ExecStart=/usr/bin/python3 -m server.backup backup --data /srv/tersus-workspace/data --backup /srv/tersus-workspace-backup --min-free 20000000000
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/tersus-workspace/data /srv/tersus-workspace-backup
+UMask=0077

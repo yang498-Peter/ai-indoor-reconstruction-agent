@@ -16,8 +16,14 @@
 ```powershell
 git clone https://github.com/yang498-Peter/ai-indoor-reconstruction-agent.git
 Set-Location ai-indoor-reconstruction-agent
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+python -m pip install --user uv==0.12.5
+python -m uv sync --locked --all-groups
+
+# 统一入口：查看命令、初始化任务、检查状态和下一步
+.\.venv\Scripts\indoor-recon.exe --help
+.\.venv\Scripts\indoor-recon.exe init --help
+.\.venv\Scripts\indoor-recon.exe status --help
+.\.venv\Scripts\indoor-recon.exe next --help
 
 # 零数据冒烟：生成合成 Scene V2 样例并启动 Viewer
 .\prototypes\litereality-three-redraw-20260812\run-demo.ps1 `
@@ -77,7 +83,8 @@ V2 报告按墙输出 `(s,h)` 面积覆盖、真实最长连续无支撑段、�
 - `scene-core/`：Semantic Scene V2 内核——节点图 Schema、Agent 变更 API（`scene_api.py`）、
   渲染编译层（miter/T 交接与门窗真开洞）、统一质量报告、自包含内容寻址发布、V1 迁移与合成样例。
   见 [docs/SCENE-V2.zh-CN.md](docs/SCENE-V2.zh-CN.md)。
-- `.codex/skills/reconstruct-indoor-scene/`：可复用 Agent 工作流、编排、证据审计和发布评分。
+- `.agents/skills/reconstruct-indoor-scene/`：Codex 标准发现路径中的精简工作流；只编排统一 CLI/MCP，不复制领域规则。
+- `.codex/skills/reconstruct-indoor-scene/`：迁移期兼容层及底层脚本；`scripts/sync_skills.py --check` 防止身份和入口漂移。
 - `prototypes/litereality-three-redraw-20260812/`：通用 Three.js 产品界面与验收入口（自动识别 V1/V2 场景）。
 - `tests/codex-scan/`、`tests/scene-v2/`：编排器门禁测试与 Scene V2 API/几何数值测试。
 - `docs/`：跨电脑迁移、数据契约和协作说明。
@@ -90,10 +97,16 @@ V2 报告按墙输出 `(s,h)` 面积覆盖、真实最长连续无支撑段、�
 ## 验证
 
 ```powershell
-python scripts/validate_portable_repo.py
-python tests/codex-scan/bh-20260812-reconstruction-orchestrator.test.py
-python tests/scene-v2/test_scene_api.py
+.\.venv\Scripts\python.exe scripts/validate_portable_repo.py
+.\.venv\Scripts\python.exe scripts/sync_skills.py --check
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check src tests/contracts/test_wp8_engineering.py
+.\.venv\Scripts\python.exe -m mypy src
+.\.venv\Scripts\indoor-recon.exe benchmark --output wp8-benchmark-report.json
 node --test tests/scene-v2/scene-core.test.mjs
 ```
 
-本仓库为公开的流程与工具仓库。客户原图、点云、场景专属模型和精确布局、注册码、API Token 及个人目录不进入 Git；私有数据通过独立授权渠道管理。
+快速基准没有给定历史基线或真实采集时，性能回归和真实数据回归必须保持 `NOT_RUN`，
+因此报告总状态为 `REVIEW`，不能据此宣称真实场景或发布验收通过。
+
+本仓库为公开的流程与工具仓库。客户原图、点云、场景专属模型和精确布局、注册码、API Token 及个人目录不进入 Git；私有成果按清单和哈希独立保管。可选的外部 Codex 自动审查尚未配置或运行，保持 `NOT_RUN`；常规 CI 不发送源码给外部模型，场景的独立 Reviewer 门禁仍按原契约执行。

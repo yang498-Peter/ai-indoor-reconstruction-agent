@@ -2,9 +2,19 @@
 
 日常照片纠错和允许推测的网页演示，先按[室内建模准确性与快速交付 SOP](室内建模准确性与快速交付SOP.zh-CN.md)选择展示分支。涉及建筑外观、驾驶、宣传物、多语言或服务器同步时，按需使用[展示精修与增量交付流程](展示精修与增量交付流程.zh-CN.md)。展示验证不替代下方权威测量流程及其门禁。
 
+## 按交付目标选择入口
+
+- 日常新数据建模、照片纠错、允许推测的网页演示：先看[室内建模准确性与快速交付 SOP](室内建模准确性与快速交付SOP.zh-CN.md)，通过已有展示分支执行。展示完成不等于权威测量通过，不改写已有门禁。
+- 严格 Scene V2 权威测量、独立审查与不可变发布：执行下述契约流程；SOP 的缓存复用建议不能代替阶段依赖或接受条件。
+
+工程入口统一为 `indoor-recon`。先用 `uv sync --locked --all-groups` 建立锁定环境，再通过
+`indoor-recon init/status/next/run/patch/review/evaluate/publish` 驱动阶段；通过
+`indoor-recon mcp` 启动官方 MCP Python SDK stdio 服务。CLI 与 MCP 只做编排和协议适配，
+authority、证据、独立 reviewer、哈希与原子写入规则仍由同一 Scene API 执行。
+
 ## 0. 三层场景与全局草模
 
-任何新数据先在 30–60 分钟内完成全局 `Reconstruction Hypothesis`，再开始逐墙逐件校核：
+新数据优先完成全局 `Reconstruction Hypothesis`，再开始逐墙逐件校核。30–60 分钟可作为典型中等场景的首轮规划参考，不是对任意数据的完成承诺或通过条件：
 
 - `scene-authority.json`：严格证据账本，只约束可声明的精度与证据等级；
 - `scene-hypothesis.json`：完整空间假设，包含主轴、外壳、主要空间、连续视觉地面、主要墙带、通道、家具分区和推断扫描边界；
@@ -40,7 +50,7 @@
 - `wall_dossier.py` / `render_photo_overlay.py`：每墙一页参考档案（正射 + 剖面 + 线框投影到最近照片），建模前定位、建模后核对——线框没落在照片真实墙上就是最快的缺陷检测器；
 - `capture_readiness.py validate-pose-reprojection`：逐帧投影-照片相关性门，坏帧单独剔除，PASS 后经 `revalidate-intake` 解锁照片关联能力；
 - `semantic_candidates.py`：VLM/看图观察（像素框）只能经反投影产出 candidate 几何，接受前必须几何复核；
-- Viewer 照片对齐模式（视锥点击进入、线框叠加照片、透明度滑杆；2:1 图自动全景球）与审查面板（状态色点、support/残差、证据预览、聚焦过滤）供人与 Agent 用同一视角核对。
+- Viewer 照片对齐模式（视锥点击进入、线框叠加照片、透明度滑杆）与审查面板（状态色点、support/残差、证据预览、聚焦过滤）供人与 Agent 用同一视角核对。先验证照片投影类型与标定；2:1 长宽比本身不证明等距柱状全景，未知投影不能直接作为全景球对齐证据。
 
 ## 3. 分区复核
 
@@ -81,4 +91,5 @@
 
 展示模型还必须通过首眼视觉拒绝门：空间数不能为 0；主要视觉地面不能无解释断开；主要墙不能悬空；不能被黑洞和孤立墙主导；主体必须占审核画面至少 65%；默认列表不得暴露零件 ID；逻辑家具必须折叠分组；交付页不得仍标 `EVIDENCE_ONLY`；首次观看者应能立即理解主要空间、通道和家具分区。
 
-详细字段与命令以 `.codex/skills/reconstruct-indoor-scene/SKILL.md` 为准。
+详细字段与命令以 `.agents/skills/reconstruct-indoor-scene/SKILL.md` 为准；
+`.codex/skills/reconstruct-indoor-scene/` 是迁移期兼容层。

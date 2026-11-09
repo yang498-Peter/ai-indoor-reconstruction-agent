@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>项目管理 · Tersus 空间工作台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./admin.css">
+  <script defer src="./admin.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/BIM-DEMO/" aria-label="返回 Tersus 展厅">
+      <span class="logo-crop"><img src="/workspace/assets/tersus-logo.png" alt="Tersus"></span>
+      <span class="brand-divider" aria-hidden="true"></span><span>空间工作台 <small>管理端</small></span>
+    </a>
+    <nav class="top-actions" aria-label="账户操作">
+      <a href="../">用户工作空间</a><button class="text-button" id="logout" type="button">退出登录</button>
+    </nav>
+  </header>
+
+  <main class="page">
+    <div class="intro"><div><p class="eyebrow">PROJECT OPERATIONS</p><h1>项目处理</h1><p class="subtitle">接收数据、跟进进度并交付成果。</p></div><button id="refresh" class="button secondary" type="button">刷新列表</button></div>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <section class="overview" aria-label="项目概览">
+      <div><span>全部项目</span><strong id="count-all">—</strong></div>
+      <div><span>待处理</span><strong id="count-pending">—</strong></div>
+      <div><span>处理中</span><strong id="count-processing">—</strong></div>
+      <div><span>已交付</span><strong id="count-complete">—</strong></div>
+    </section>
+    <details class="system-panel" id="system-panel"><summary><span><strong>数据保障</strong><span id="system-badge" class="system-badge warning">正在读取状态</span></span><span id="system-toggle" class="quiet" aria-hidden="true">查看详情</span></summary><div class="system-body"><div><span>服务器存储</span><strong id="system-storage">正在读取</strong></div><div><span>最近成功备份</span><strong id="system-backup">正在读取</strong></div><p id="system-message" class="system-message"></p><p>同机备份仅作故障恢复准备，不能防范整机损坏。项目删除后，备份副本将在下一次成功备份后清理。</p></div></details>
+
+    <div class="workspace">
+      <section class="panel projects-panel" aria-labelledby="projects-heading">
+        <div class="panel-heading"><div><p class="eyebrow">PROJECTS</p><h2 id="projects-heading">项目队列</h2></div><span id="visible-count" class="quiet"></span></div>
+        <div class="filters"><label class="search"><span class="visually-hidden">搜索项目或用户</span><input type="search" id="search" placeholder="搜索项目或用户" autocomplete="off"></label>
+          <label><span class="visually-hidden">筛选项目状态</span><select id="filter"><option value="all">全部状态</option><option value="submitted">待处理</option><option value="processing">处理中</option><option value="needs_info">待补充</option><option value="delivered">已交付</option><option value="uploading">上传中</option><option value="draft">待上传</option></select></label></div>
+        <div id="project-list" class="project-list" aria-live="polite"><p class="empty">正在读取项目…</p></div>
+      </section>
+
+      <section id="detail-panel" class="panel detail-panel" aria-labelledby="detail-heading">
+        <div id="detail-empty" class="detail-empty"><div class="empty-icon" aria-hidden="true">↗</div><h2 id="detail-heading">选择一个项目</h2><p>查看原始数据和需求，更新进度并交付结果。</p></div>
+        <div id="detail" hidden>
+          <div class="detail-top"><div><p class="eyebrow">PROJECT DETAILS</p><h2 id="project-title"></h2><p id="project-subtitle" class="quiet"></p></div><span id="project-status" class="status"></span></div>
+          <div class="detail-meta" id="project-meta"></div><button id="reset-password" class="text-button reset-link" type="button">重置用户密码</button>
+          <section class="detail-section"><div class="section-title"><div><h3>客户需求</h3><p>用户提交的处理与成果格式</p></div></div><div id="requirements" class="tags"></div><p id="customer-note" class="customer-note" hidden></p></section>
+          <section class="detail-section"><div class="section-title"><div><h3>项目沟通</h3><p>查看客户补充和处理团队的回复</p></div><span id="message-count" class="quiet"></span></div><div id="messages-list" class="messages-list" role="log" aria-live="polite"></div><form id="message-form" class="message-form"><label class="field">回复客户<textarea id="message-input" maxlength="2000" rows="2" placeholder="输入需要告知客户的内容" required></textarea></label><button id="send-message" class="button secondary" type="submit">发送留言</button></form></section>
+          <section class="detail-section"><div class="section-title"><div><h3>原始数据</h3><p>文件路径按上传时保留；下载后可用校验清单核对。</p></div><span id="raw-count" class="quiet"></span></div><div id="raw-files" class="file-list"></div><div class="upload-actions"><a id="raw-archive" class="button secondary archive" hidden>下载完整原始数据</a><a id="raw-manifest" class="button secondary archive" hidden>下载 SHA-256 校验清单</a></div><p id="raw-hint" class="download-hint" hidden>完整包为实时打包，网络中断后可逐文件续传下载，并用校验清单核对。</p></section>
+          <section class="detail-section"><div class="section-title"><div><h3>成果交付</h3><p>上传后请确认并将状态保存为“已交付”，用户才能看到新增成果。</p></div><span id="result-count" class="quiet"></span></div><div id="result-files" class="file-list"></div>
+            <div class="upload-box"><div><strong>添加成果</strong><p>每次最多 5 GB，支持断点续传；上传前会在本机计算文件校验值。</p></div><div class="upload-actions"><label class="button secondary file-picker">选择文件<input id="result-input" type="file" multiple></label><label class="button secondary file-picker">选择文件夹<input id="result-folder" type="file" webkitdirectory multiple></label></div></div>
+            <div id="pending-uploads" class="pending-uploads"></div><div id="selected-files" class="selected-files" aria-live="polite"></div><div id="upload-progress" class="progress-block" hidden><div><span id="progress-label" aria-live="polite">准备上传</span><strong id="progress-percent">0%</strong></div><progress id="progress" max="100" value="0" aria-label="成果上传进度"></progress></div><div class="upload-actions"><button id="upload" class="button primary" type="button" disabled>上传成果</button><button id="pause-upload" class="button secondary" type="button" hidden>暂停上传</button></div>
+          </section>
+          <section class="detail-section"><div class="section-title"><div><h3>更新进度</h3><p>状态和说明会展示给客户；每次上传新成果后需再次保存“已交付”。</p></div></div>
+            <p id="status-unavailable" class="quiet" hidden>请等待客户完成原始数据上传后再更新状态。</p><form id="status-form"><label class="field">处理状态<select id="status-input" required><option value="submitted">待处理</option><option value="processing">处理中</option><option value="needs_info">待补充</option><option value="delivered">已交付</option></select></label><label class="field">给客户的说明<textarea id="status-message" maxlength="1000" rows="3" placeholder="例如：数据已接收，正在进行质量检查。"></textarea></label><button class="button secondary" id="save-status" type="submit">保存更新</button></form>
+          </section>
+          <p id="privacy-note" class="privacy-note">公开展示由项目所有者控制，请交付前核对状态。</p>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="reset-dialog" aria-labelledby="reset-title" aria-describedby="reset-help">
+    <form id="reset-form">
+      <div class="modal-heading"><div><p class="eyebrow">ACCOUNT RECOVERY</p><h2 id="reset-title">重置用户密码</h2></div><button id="reset-close" class="modal-close" type="button" aria-label="关闭">×</button></div>
+      <p class="modal-user">账户：<strong id="reset-user"></strong></p>
+      <p id="reset-help" class="modal-help">请先线下核实账户所属人的身份，并通过安全渠道告知临时密码。重置后，该用户的所有登录会话将失效，下次登录必须修改临时密码。管理员账户不能在此重置。</p>
+      <label class="field">临时密码（10–128 个字符）<input id="reset-secret" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label>
+      <label class="field">再次输入临时密码<input id="reset-confirm" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label>
+      <p id="reset-error" class="reset-error" role="alert" hidden></p>
+      <div class="modal-actions"><button id="reset-cancel" class="button secondary" type="button">取消</button><button id="reset-submit" class="button primary" type="submit">确认重置密码</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

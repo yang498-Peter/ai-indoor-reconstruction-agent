@@ -1,0 +1,7 @@
+storage.local/
+*storage.local/
+**/runtime-*/
+*.sqlite3*
+*.chunk
+*.local.json
+__pycache__/

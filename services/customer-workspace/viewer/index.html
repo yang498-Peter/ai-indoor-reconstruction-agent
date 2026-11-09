@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>三维成果查看 · Tersus</title>
+  <link rel="stylesheet" href="/workspace/viewer/viewer.css">
+  <script type="module" src="/workspace/viewer/viewer.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/BIM-DEMO/"><img src="/workspace/assets/tersus-logo.png" alt="TERSUS"><span>三维成果查看</span></a>
+    <nav aria-label="成果操作"><a id="back" href="/workspace/">返回工作空间</a><a id="download" class="download" href="#">下载模型</a></nav>
+  </header>
+  <main aria-label="三维模型查看器">
+    <div id="viewport" aria-label="三维模型"></div>
+    <section class="context"><span>交付成果</span><h1>三维模型</h1><p>拖动旋转 · 滚轮或双指缩放</p></section>
+    <div id="status" role="status" aria-live="polite">正在准备模型…</div>
+    <button id="reset" type="button" disabled>恢复视角</button>
+  </main>
+</body>
+</html>

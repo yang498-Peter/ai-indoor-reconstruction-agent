@@ -1,0 +1,3 @@
+Three.js r178 is distributed under the accompanying MIT license. The loader,
+controls and utility modules have only their bare "three" import rewritten
+to the same-origin workspace vendor URL. No customer model data is included.

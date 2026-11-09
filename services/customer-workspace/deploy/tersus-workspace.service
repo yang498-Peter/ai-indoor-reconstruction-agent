@@ -1,0 +1,24 @@
+[Unit]
+Description=Tersus isolated customer workspace
+After=network.target
+
+[Service]
+Type=simple
+User=tersus-workspace
+Group=tersus-workspace
+WorkingDirectory=/opt/tersus-workspace/current
+Environment=PYTHONIOENCODING=utf-8
+Environment=LANG=C.UTF-8
+ExecStart=/usr/bin/python3 -m server.app --data /srv/tersus-workspace/data --origin https://mvpmodel.tersus-gnss.com --port 8842 --min-free 20000000000 --max-capacity 80000000000 --trusted-proxy
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/tersus-workspace/data
+UMask=0077
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

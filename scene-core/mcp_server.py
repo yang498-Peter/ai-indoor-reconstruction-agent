@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""MCP stdio server exposing the Semantic Scene V2 mutation API as tools.
+"""Semantic Scene V2 MCP tool catalog and domain adapter.
 
-Transport is MCP stdio: newline-delimited JSON-RPC 2.0 on stdin/stdout, no
-Content-Length framing. Only stderr is free for logging -- anything written to
-stdout that is not a JSON-RPC message corrupts the session.
+The official MCP Python SDK owns transport, protocol negotiation, validation,
+capabilities, and framing through ``indoor_reconstruction.mcp.server``.  This
+module retains the checked-in tool catalog and delegates every operation to the
+pure Scene API so CLI and MCP calls share the same fail-closed rules.
 
 This is a thin wrapper. Every gate (opening fit, evidence hashes, independent
 reviewer, structural validation) lives in scene_api.py and stays there; the
@@ -19,16 +20,14 @@ Coordinates are SOURCE plan meters (x, y), Z-up -- identical to scene_api.
 
 from __future__ import annotations
 
-import argparse
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
-PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "semantic-scene-v2"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "2.0.0"
 
 CORE_DIR = Path(__file__).resolve().parent
 
@@ -928,109 +927,39 @@ def call_tool(scene_path: Path, identity: dict, name: str, arguments: dict) -> d
     except (TypeError, ValueError) as error:
         return error_result(f"BAD_ARGUMENT:{name}: {error}")
     except OSError as error:
-        return error_result(f"IO_FAILED:{name}: {error}")
+        return error_result(f"IO_FAILED:{name}:{error.strerror or error.__class__.__name__}")
 
 
 def text_result(payload: Any, is_error: bool = False) -> dict:
     return {
         "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
+        "structuredContent": payload,
         "isError": is_error,
     }
 
 
 def error_result(message: str) -> dict:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
-
-
-# ---------------------------------------------------------------------------
-# JSON-RPC 2.0 over newline-delimited stdio
-# ---------------------------------------------------------------------------
-
-def handle_message(message: dict, scene_path: Path, identity: dict) -> dict | None:
-    method = message.get("method")
-    message_id = message.get("id")
-    # Absent id means notification: MCP forbids a response, even for errors.
-    is_notification = "id" not in message or message_id is None
-
-    if isinstance(method, str) and method.startswith("notifications/"):
-        return None
-
-    if method == "initialize":
-        result: Any = {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-        }
-    elif method == "ping":
-        result = {}
-    elif method == "tools/list":
-        result = {"tools": public_tools(identity)}
-    elif method == "tools/call":
-        params = message.get("params") or {}
-        result = call_tool(scene_path, identity, params.get("name"), params.get("arguments") or {})
-    else:
-        if is_notification:
-            return None
-        return {
-            "jsonrpc": "2.0", "id": message_id,
-            "error": {"code": -32601, "message": f"Method not found: {method}"},
-        }
-
-    if is_notification:
-        return None
-    return {"jsonrpc": "2.0", "id": message_id, "result": result}
-
-
-def write_message(stream, payload: dict) -> None:
-    # json.dumps escapes embedded newlines, so one message is always one line.
-    stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    stream.flush()
-
-
-def serve(scene_path: Path, identity: dict, stdin, stdout) -> int:
-    for line in stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError as error:
-            write_message(stdout, {
-                "jsonrpc": "2.0", "id": None,
-                "error": {"code": -32700, "message": f"Parse error: {error}"},
-            })
-            continue
-        if not isinstance(message, dict):
-            write_message(stdout, {
-                "jsonrpc": "2.0", "id": None,
-                "error": {"code": -32600, "message": "Invalid Request: expected a JSON object"},
-            })
-            continue
-        response = handle_message(message, scene_path, identity)
-        if response is not None:
-            write_message(stdout, response)
-    return 0
+    code = message.split(":", 1)[0] if message else "MCP_TOOL_FAILED"
+    retryable = code in {"PATCH_BASE_STALE", "IO_FAILED", "CAPTURE_INDEX_ERROR"}
+    next_actions = ["refresh current state and retry"] if retryable else []
+    return text_result({
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+            "nextActions": next_actions,
+        },
+    }, is_error=True)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="MCP stdio server for the Semantic Scene V2 API")
-    parser.add_argument("--scene", required=True, type=Path, help="scene V2 JSON path (created by init_scene)")
-    parser.add_argument("--identity", required=True, type=Path, help="execution identity and checked-in tool policy")
-    args = parser.parse_args(argv)
+    source_root = CORE_DIR.parent / "src"
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    from indoor_reconstruction.mcp.server import main as official_main
 
-    try:
-        identity = api.execution_identity_api.load_identity(args.identity.resolve())
-    except api.execution_identity_api.IdentityError as error:
-        print(str(error), file=sys.stderr)
-        return 2
-
-    # The transport is a byte-exact JSON stream; a locale-dependent console
-    # codec on Windows would mangle non-ASCII names before the client sees them.
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", newline="\n")
-
-    return serve(args.scene, identity, sys.stdin, sys.stdout)
+    return official_main(argv)
 
 
 if __name__ == "__main__":

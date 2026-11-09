@@ -1,0 +1,5 @@
+.showcase-workspace-links{display:flex;align-items:center;gap:26px}
+.showcase-workspace-entry{display:inline-flex;align-items:center;gap:8px;padding:10px 15px;border-radius:8px;background:#245e4e;color:#fff;text-decoration:none;font-size:13px;font-weight:600;white-space:nowrap}
+.showcase-workspace-entry:hover{background:#184c3e}
+.showcase-workspace-entry:focus-visible{outline:3px solid #6ab38f;outline-offset:3px}
+@media(max-width:520px){.showcase-workspace-links{gap:0}.showcase-workspace-links>.header-link{display:none}.showcase-workspace-entry{padding:10px 12px;font-size:12px}}

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1000">
+  <title>Abstract spatial workspace</title>
+  <!-- Synthetic illustration: no customer capture, floor plan or measured layout. -->
+  <defs>
+    <linearGradient id="sky" x2="0" y2="1"><stop stop-color="#d8e8dd"/><stop offset="1" stop-color="#95b6a6"/></linearGradient>
+    <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse"><path d="M80 0H0V80" fill="none" stroke="#547f6d" stroke-opacity=".13"/></pattern>
+    <filter id="shadow"><feGaussianBlur stdDeviation="24"/></filter>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1200v1000H0z"/>
+  <path fill="url(#grid)" d="M0 0h1200v1000H0z"/>
+  <ellipse cx="600" cy="655" rx="410" ry="110" fill="#416b58" opacity=".15" filter="url(#shadow)"/>
+  <g stroke="#6d9582" stroke-width="3" stroke-linejoin="round">
+    <path d="m210 490 390-225 390 225-390 225z" fill="#e4f0e7"/>
+    <path d="m210 490 390 225v95L210 585z" fill="#9fbeab"/>
+    <path d="m600 715 390-225v95L600 810z" fill="#779e88"/>
+    <path d="m365 402 235-136 235 136-235 135z" fill="#f6faf6"/>
+    <path d="m365 402 235 135v135L365 537z" fill="#b8cebe"/>
+    <path d="m600 537 235-135v135L600 672z" fill="#8fb39c"/>
+    <path d="m468 342 132-77 132 77-132 77z" fill="#fff"/>
+    <path d="m468 342 132 77v90l-132-77z" fill="#d1e1d3"/>
+    <path d="m600 419 132-77v90l-132 77z" fill="#a9c4af"/>
+  </g>
+  <g fill="none" stroke="#f8fcf7" stroke-width="2" opacity=".65">
+    <path d="m265 555 335 194 335-194M420 500l180 104 180-104"/>
+    <path d="M600 190v55M1005 475l45-25M150 450l45 25"/>
+  </g>
+</svg>

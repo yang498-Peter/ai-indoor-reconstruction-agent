@@ -4,24 +4,44 @@
 from __future__ import annotations
 
 import re
-import sys
+import subprocess
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_FILE_BYTES = 5 * 1024 * 1024
 BANNED_SUFFIXES = {".las", ".laz", ".e57", ".ply", ".pcd", ".mcap", ".bag", ".bin"}
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".mjs", ".ps1", ".py", ".txt", ".yaml", ".yml"}
-ABSOLUTE_PATH = re.compile(r"(?i)(?:[A-Z]:[\\/](?:Users|cloudstudio|2026-|S1|MVP)|/home/|/Users/)")
+ABSOLUTE_PATH = re.compile(
+    r"(?i)(?:[A-Z]:[\\/](?:Users|cloudstudio|2026-|S1|MVP)|(?<![A-Za-z0-9_./-])/(?:home|Users)/)"
+)
 SECRET_TOKEN = re.compile(
     r"(?i)(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?<![A-Za-z])sk-[A-Za-z0-9_-]{16,})"
 )
 SECRET_ASSIGNMENT = re.compile(r"(?i)api[_-]?key\s*[:=]\s*['\"][^'\"]+")
 
 
+def repository_files() -> list[Path]:
+    """Return files that Git would publish, excluding local ignored artifacts."""
+    result = subprocess.run(
+        ["git", "-c", f"safe.directory={ROOT.as_posix()}", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"GIT_LIST_FAILED:{message}")
+    relative_paths = result.stdout.decode("utf-8").split("\0")
+    return [ROOT / relative for relative in relative_paths if relative and (ROOT / relative).is_file()]
+
+
 def main() -> int:
     issues: list[str] = []
-    files = [path for path in ROOT.rglob("*") if path.is_file() and ".git" not in path.parts]
+    try:
+        files = repository_files()
+    except RuntimeError as error:
+        print(f"Portable repository validation FAILED\n- {error}")
+        return 1
     for path in files:
         relative = path.relative_to(ROOT).as_posix()
         if path.suffix.lower() in BANNED_SUFFIXES:
@@ -48,7 +68,10 @@ def main() -> int:
     # generated/ output, so listing generated files here breaks first-run
     # validation on every new machine.
     required = [
-        ROOT / ".codex/skills/reconstruct-indoor-scene/SKILL.md",
+        ROOT / ".agents/skills/reconstruct-indoor-scene/SKILL.md",
+        ROOT / "AGENTS.md",
+        ROOT / "pyproject.toml",
+        ROOT / "templates/minimal-viewer/index.html",
         ROOT / "prototypes/litereality-three-redraw-20260812/viewer.html",
         ROOT / "scene-core/semantic-scene-v2.schema.json",
         ROOT / "scene-core/scene_api.py",

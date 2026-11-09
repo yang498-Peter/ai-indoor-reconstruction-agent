@@ -27,7 +27,7 @@ class StaticRendererV2Tests(unittest.TestCase):
                 "wall": {"id": "wall", "type": "wall", "wallKind": "solid", "start": [0, 0], "end": [2, 0], "height": 3, "thickness": .1},
                 "opening": {"id": "opening", "type": "opening", "parentId": "wall", "hostOffsetM": 1, "width": .8, "height": 2.1, "sillHeight": 0},
                 "slab": {"id": "slab", "type": "slab", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]], "elevation": -.05},
-                "item": {"id": "item", "type": "item", "category": "table", "center": [1, 1], "size": [1, .7, .5], "elevation": 0, "yaw": 0},
+                "item": {"id": "item", "type": "item", "category": "table", "center": [1, 1], "size": [1, .7, .5], "elevation": 0, "yaw": 0.25},
             },
             "evidence": {key: {"status": "accepted-measured"} for key in ("wall", "slab", "item")},
             "review": {"issues": []},
@@ -41,6 +41,7 @@ class StaticRendererV2Tests(unittest.TestCase):
             self.assertEqual(len(compiled["structures"]), 4)
             self.assertEqual(len(compiled["objects"]), 1)
             self.assertEqual(compiled["structures"][0]["start"], [0, 0, 0])
+            self.assertEqual(compiled["objects"][0]["yaw"], 0.25)
             self.assertTrue(compiled["objects"][0]["_atomicV2"])
 
     def test_door_and_window_cut_the_host_wall(self):

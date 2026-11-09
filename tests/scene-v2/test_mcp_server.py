@@ -1,33 +1,35 @@
-"""End-to-end gate test for the Semantic Scene V2 MCP stdio server.
+"""End-to-end gate tests through the official MCP Python SDK client.
 
-The server is driven exactly like a real MCP client would: a child process
-speaking newline-delimited JSON-RPC 2.0 over stdin/stdout. Reads go through a
-background thread and a queue because select() cannot poll pipes on Windows,
-and a blocking readline on a crashed server would hang the whole suite.
+The in-memory transport is provided by the SDK itself.  This keeps the tests
+focused on the public MCP contract while leaving framing, negotiation, and
+capability handling to the upstream implementation used in production.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import importlib.util
 import json
-import hashlib
-from datetime import datetime, timezone
-from pathlib import Path
-import queue
-import subprocess
 import sys
 import tempfile
-import threading
 import unittest
+from datetime import datetime, timezone
+from pathlib import Path
 
 import laspy
 import numpy as np
+from mcp import Client, ClientSession, StdioServerParameters, stdio_client
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER = REPO_ROOT / "scene-core" / "mcp_server.py"
-POLICIES = json.loads((REPO_ROOT / "schemas" / "tool-policies-v1.json").read_text(encoding="utf-8"))["policies"]
+SRC = REPO_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-RESPONSE_TIMEOUT_S = 20.0
+from indoor_reconstruction.mcp.server import create_server  # noqa: E402
+
+POLICIES = json.loads((REPO_ROOT / "schemas" / "tool-policies-v1.json").read_text(encoding="utf-8"))["policies"]
 
 EXPECTED_TOOLS = {
     "init_scene", "create_wall", "add_door", "add_window", "add_opening", "add_item",
@@ -66,111 +68,34 @@ REVIEWER_IDENTITY = identity(
 
 
 class McpServerTestCase(unittest.TestCase):
-    """Spawns one server per test against a throwaway scene directory."""
+    """Creates a fresh SDK server per call against a throwaway scene."""
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.scene_path = self.root / "scene.json"
-        self.next_id = 0
-        self.stderr_lines: list[str] = []
+        self.identity_value = AUTHOR_IDENTITY
 
-        self._start_server(AUTHOR_IDENTITY)
-
-    def _start_server(self, identity_value: dict) -> None:
-        self.identity_path = self.root / f"identity-{identity_value['actorId']}.json"
-        self.identity_path.write_text(json.dumps(identity_value), encoding="utf-8")
-        self.process = subprocess.Popen(
-            [sys.executable, str(SERVER), "--scene", str(self.scene_path), "--identity", str(self.identity_path)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", bufsize=1,
-        )
-        self.responses: queue.Queue[str] = queue.Queue()
-        self.readers = [
-            threading.Thread(target=self._pump, args=(self.process.stdout, self.responses.put), daemon=True),
-            threading.Thread(target=self._pump, args=(self.process.stderr, self.stderr_lines.append), daemon=True),
-        ]
-        for reader in self.readers:
-            reader.start()
-
-    def _stop_server(self) -> None:
-        # Closing stdin is the documented shutdown for an MCP stdio server; kill
-        # only if it refuses, so a hung server surfaces as a slow test not a leak.
-        try:
-            if self.process.stdin and not self.process.stdin.closed:
-                self.process.stdin.close()
-            self.process.wait(timeout=10)
-        except (subprocess.TimeoutExpired, OSError):
-            self.process.kill()
-            self.process.wait(timeout=10)
-        for reader in self.readers:
-            reader.join(timeout=5)
-        # Popen leaves the pipe wrappers open; close them once the readers hit
-        # EOF so the suite does not accumulate ResourceWarnings per test.
-        for stream in (self.process.stdout, self.process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
     def restart_server(self, identity_value: dict) -> None:
-        self._stop_server()
-        self.responses = queue.Queue()
-        self.stderr_lines = []
-        self._start_server(identity_value)
+        self.identity_value = identity_value
 
     def tearDown(self) -> None:
-        self._stop_server()
         self.temp.cleanup()
 
-    @staticmethod
-    def _pump(stream, sink) -> None:
-        if stream is None:
-            return
-        for line in stream:
-            sink(line.rstrip("\r\n"))
-
-    # -- transport helpers -------------------------------------------------
-
-    def _send(self, payload: dict) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        self.process.stdin.flush()
-
-    def _read_response(self) -> dict:
-        try:
-            line = self.responses.get(timeout=RESPONSE_TIMEOUT_S)
-        except queue.Empty:
-            self.fail(
-                f"no response within {RESPONSE_TIMEOUT_S}s; "
-                f"exit={self.process.poll()} stderr={self.stderr_lines}"
-            )
-        return json.loads(line)
-
-    def request(self, method: str, params: dict | None = None) -> dict:
-        self.next_id += 1
-        message_id = self.next_id
-        payload = {"jsonrpc": "2.0", "id": message_id, "method": method}
-        if params is not None:
-            payload["params"] = params
-        self._send(payload)
-        response = self._read_response()
-        self.assertEqual(response.get("jsonrpc"), "2.0")
-        self.assertEqual(response.get("id"), message_id)
-        return response
-
-    def notify(self, method: str, params: dict | None = None) -> None:
-        payload = {"jsonrpc": "2.0", "method": method}
-        if params is not None:
-            payload["params"] = params
-        self._send(payload)
-
     def call_tool(self, name: str, arguments: dict | None = None) -> tuple[dict, bool]:
-        """Return (decoded tool payload, isError). Errors carry a raw text message."""
-        response = self.request("tools/call", {"name": name, "arguments": arguments or {}})
-        self.assertNotIn("error", response, f"tools/call {name} failed at the protocol layer")
-        result = response["result"]
-        self.assertEqual(result["content"][0]["type"], "text")
-        text = result["content"][0]["text"]
-        is_error = bool(result["isError"])
-        return ({"message": text} if is_error else json.loads(text)), is_error
+        """Return ``(structured payload, isError)`` through the official client."""
+
+        async def exercise() -> tuple[dict, bool]:
+            server = create_server(self.scene_path, self.identity_value)
+            async with Client(server) as client:
+                result = await client.call_tool(name, arguments or {})
+                payload = result.structured_content
+                self.assertIsInstance(payload, dict)
+                if result.is_error:
+                    return {"message": payload["error"]["message"]}, True
+                return payload, False
+
+        return asyncio.run(exercise())
 
     def call_ok(self, name: str, arguments: dict | None = None) -> dict:
         payload, is_error = self.call_tool(name, arguments)
@@ -178,46 +103,76 @@ class McpServerTestCase(unittest.TestCase):
         return payload["result"]
 
     def handshake(self) -> dict:
-        response = self.request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "test-client", "version": "0"},
-        })
-        self.notify("notifications/initialized")
-        return response["result"]
+        async def exercise() -> dict:
+            server = create_server(self.scene_path, self.identity_value)
+            async with Client(server) as client:
+                assert client.server_info is not None
+                return {
+                    "protocolVersion": client.protocol_version,
+                    "capabilities": client.server_capabilities.model_dump(by_alias=True),
+                    "serverInfo": client.server_info.model_dump(by_alias=True),
+                }
+
+        return asyncio.run(exercise())
+
+    def list_tools(self):
+        async def exercise():
+            server = create_server(self.scene_path, self.identity_value)
+            async with Client(server) as client:
+                return (await client.list_tools()).tools
+
+        return asyncio.run(exercise())
 
     def disk_scene(self) -> dict:
         return json.loads(self.scene_path.read_text(encoding="utf-8"))
 
 
 class HandshakeTest(McpServerTestCase):
+    def test_stdio_entrypoint_negotiates_through_the_official_sdk(self):
+        identity_path = self.root / "stdio-author.json"
+        identity_path.write_text(json.dumps(AUTHOR_IDENTITY), encoding="utf-8")
+
+        async def exercise() -> None:
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=[str(SERVER), "--scene", str(self.scene_path), "--identity", str(identity_path)],
+                cwd=REPO_ROOT,
+            )
+            async with stdio_client(parameters) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    initialized = await session.initialize()
+                    tools = await session.list_tools()
+                    self.assertEqual(initialized.server_info.name, "semantic-scene-v2")
+                    self.assertEqual({tool.name for tool in tools.tools}, EXPECTED_TOOLS)
+
+        asyncio.run(exercise())
+
     def test_initialize_advertises_tools_capability(self):
         result = self.handshake()
-        self.assertEqual(result["protocolVersion"], "2024-11-05")
+        self.assertTrue(result["protocolVersion"])
         self.assertIn("tools", result["capabilities"])
         self.assertTrue(result["serverInfo"]["name"])
         self.assertTrue(result["serverInfo"]["version"])
 
     def test_tools_list_matches_expected_surface(self):
         self.handshake()
-        tools = self.request("tools/list")["result"]["tools"]
-        names = {tool["name"] for tool in tools}
+        tools = self.list_tools()
+        names = {tool.name for tool in tools}
         self.assertEqual(len(tools), len(EXPECTED_TOOLS))
         self.assertEqual(names, EXPECTED_TOOLS)
         for tool in tools:
-            self.assertTrue(tool["description"], f"{tool['name']} has no description")
-            self.assertEqual(tool["inputSchema"]["type"], "object")
-        by_name = {tool["name"]: tool for tool in tools}
+            self.assertTrue(tool.description, f"{tool.name} has no description")
+            self.assertEqual(tool.input_schema["type"], "object")
+        by_name = {tool.name: tool for tool in tools}
         # The offset semantics are the single most misread argument; keep them documented.
-        self.assertIn("offset", by_name["add_door"]["inputSchema"]["properties"])
-        self.assertIn("CENTER", by_name["add_door"]["inputSchema"]["properties"]["offset"]["description"])
-        self.assertIn("meters", by_name["create_wall"]["description"])
+        self.assertIn("offset", by_name["add_door"].input_schema["properties"])
+        self.assertIn("CENTER", by_name["add_door"].input_schema["properties"]["offset"]["description"])
+        self.assertIn("meters", by_name["create_wall"].description)
 
-    def test_ping_and_unknown_method(self):
-        self.handshake()
-        self.assertEqual(self.request("ping")["result"], {})
-        response = self.request("scene/teleport")
-        self.assertEqual(response["error"]["code"], -32601)
+    def test_official_sdk_negotiates_server_identity(self):
+        result = self.handshake()
+        self.assertEqual(result["serverInfo"]["name"], "semantic-scene-v2")
+        self.assertEqual(result["serverInfo"]["version"], "0.8.0")
 
     def test_unknown_tool_is_reported_as_tool_error(self):
         self.handshake()

@@ -23,6 +23,7 @@ The capture stays read-only; all outputs go to --output.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -120,6 +121,13 @@ def cmd_overview(args) -> int:
     output: Path = args.output
     output.mkdir(parents=True, exist_ok=True)
     bands = parse_bands(args.bands)
+    level_survey = None
+    floor_plane = None
+    if args.level_survey is not None:
+        level_survey = json.loads(args.level_survey.read_text(encoding="utf-8"))
+        floor_plane = level_survey.get("floor")
+        if not isinstance(floor_plane, dict) or not all(key in floor_plane for key in ("a", "b", "c")):
+            raise SystemExit("level survey does not contain floor plane coefficients a,b,c")
 
     with laspy.open(las_path) as reader:
         header = reader.header
@@ -166,24 +174,30 @@ def cmd_overview(args) -> int:
     valid = count > 0
     # Smooth ground reference on a coarse grid so single low outliers do not
     # poison the band classification.
-    coarse = max(1, int(round(args.ground_cell / cell)))
-    coarse_h = math.ceil(height / coarse)
-    coarse_w = math.ceil(width / coarse)
-    ground = np.full((coarse_h, coarse_w), np.nan, dtype=np.float32)
-    for r in range(coarse_h):
-        rows = slice(r * coarse, min((r + 1) * coarse, height))
-        for c in range(coarse_w):
-            cols = slice(c * coarse, min((c + 1) * coarse, width))
-            block = low_z[rows, cols]
-            block = block[np.isfinite(block)]
-            if block.size:
-                ground[r, c] = np.percentile(block, 10)
-    # Fill holes with the global median so relative bands stay defined.
-    global_ground = float(np.nanmedian(ground)) if np.isfinite(ground).any() else 0.0
-    ground = np.where(np.isnan(ground), global_ground, ground)
+    if floor_plane is None:
+        coarse = max(1, int(round(args.ground_cell / cell)))
+        coarse_h = math.ceil(height / coarse)
+        coarse_w = math.ceil(width / coarse)
+        ground = np.full((coarse_h, coarse_w), np.nan, dtype=np.float32)
+        for r in range(coarse_h):
+            rows = slice(r * coarse, min((r + 1) * coarse, height))
+            for c in range(coarse_w):
+                cols = slice(c * coarse, min((c + 1) * coarse, width))
+                block = low_z[rows, cols]
+                block = block[np.isfinite(block)]
+                if block.size:
+                    ground[r, c] = np.percentile(block, 10)
+        # Fill holes with the global median so relative bands stay defined.
+        global_ground = float(np.nanmedian(ground)) if np.isfinite(ground).any() else 0.0
+        ground = np.where(np.isnan(ground), global_ground, ground)
 
-    def ground_at(row: np.ndarray, col: np.ndarray) -> np.ndarray:
-        return ground[np.minimum(row // coarse, coarse_h - 1), np.minimum(col // coarse, coarse_w - 1)]
+        def ground_at(row: np.ndarray, col: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+            return ground[np.minimum(row // coarse, coarse_h - 1), np.minimum(col // coarse, coarse_w - 1)]
+    else:
+        def ground_at(row: np.ndarray, col: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+            del row, col
+            return (float(floor_plane["a"]) * x + float(floor_plane["b"]) * y
+                    + float(floor_plane["c"]))
 
     # Pass 2: ground-relative band accumulation.
     band_count = [np.zeros((height, width), dtype=np.uint32) for _ in bands]
@@ -194,7 +208,7 @@ def cmd_overview(args) -> int:
         z = np.asarray(points.z, dtype=np.float32)
         rgb = color_scale(points)
         row, col, ok = grid.indices(x, y)
-        z_rel = z[ok] - ground_at(row, col)
+        z_rel = z[ok] - ground_at(row, col, x[ok], y[ok])
         rgb_ok = rgb[ok] if rgb is not None else None
         for index, (_, lo, hi) in enumerate(bands):
             mask = (z_rel >= lo) & (z_rel < hi)
@@ -202,10 +216,20 @@ def cmd_overview(args) -> int:
             if rgb_ok is not None:
                 np.add.at(band_rgb_sum[index], (row[mask], col[mask]), rgb_ok[mask].astype(np.uint64))
 
+    if args.level_survey is None:
+        ground_reference = ("per-cell 10th percentile of lowest returns, "
+                            f"{args.ground_cell} m blocks; global median fallback")
+    else:
+        ground_reference = {
+            "kind": "provided-floor-plane",
+            "path": str(args.level_survey.resolve()),
+            "sha256": hashlib.sha256(args.level_survey.read_bytes()).hexdigest(),
+            "equation": "z = a*x + b*y + c",
+            "coefficients": {key: float(floor_plane[key]) for key in ("a", "b", "c")},
+        }
     manifest = {"las": las_path.name, "pointCount": total, "decimation": args.every,
                 "bounds": {"minX": min_x, "minY": min_y, "maxX": max_x, "maxY": max_y},
-                "groundReference": "per-cell 10th percentile of lowest returns, "
-                                   f"{args.ground_cell} m blocks; global median fallback",
+                "groundReference": ground_reference,
                 "grid": grid.meta(), "images": {}}
 
     top_img = np.where(valid[..., None], top_rgb, 24).astype(np.uint8)
@@ -322,6 +346,8 @@ def main() -> int:
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--cell", type=float, default=0.08, help="plan cell size in meters")
     p.add_argument("--ground-cell", type=float, default=1.0, help="ground reference block size in meters")
+    p.add_argument("--level-survey", type=Path,
+                   help="plane-level survey JSON; when set, bands are relative to floor z=a*x+b*y+c")
     p.add_argument("--bands", default=DEFAULT_BANDS)
     p.add_argument("--crop", type=parse_crop, help="minX,minY,maxX,maxY plan crop")
     p.add_argument("--every", type=int, default=1, help="keep every Nth point (decimation)")

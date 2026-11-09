@@ -61,3 +61,12 @@ Thumbs.db
 !.env.example
 real-data.local.json
 *.local.json
+
+# Private authoring, delivery evidence and local application output stay on disk.
+/work/
+/output/
+/.playwright-cli/
+/.playwright-mcp/
+/.uv-cache/
+/dist/
+*.egg-info/

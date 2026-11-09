@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from discover_capture import build_manifest, write_json_atomic
 from reconstruction_loop import initialize_workflow
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def write_json(path: Path, value: object) -> None:
@@ -20,7 +23,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--work", required=True, type=Path)
-    parser.add_argument("--scaffold", type=Path, default=Path("prototypes/litereality-three-demo"))
+    parser.add_argument("--scaffold", type=Path, default=REPO_ROOT / "templates" / "minimal-viewer")
+    parser.add_argument("--profile", default="default-office-v1")
     parser.add_argument("--point-cloud", help="Exact capture-relative point-cloud path when discovery is ambiguous")
     parser.add_argument("--length-unit", choices=("metre", "foot", "us-survey-foot"))
     parser.add_argument("--up-axis", choices=("Z",))
@@ -36,10 +40,14 @@ def main() -> int:
     data = args.data.resolve()
     work = args.work.resolve()
     scaffold = args.scaffold.resolve()
+    profile_path = REPO_ROOT / "profiles" / f"{args.profile}.json"
     if not data.is_dir():
         parser.error(f"capture directory does not exist: {data}")
     if data == work or data in work.parents:
         parser.error("work directory must not be the capture directory or one of its children")
+    if not profile_path.is_file():
+        parser.error(f"topology profile does not exist: {args.profile}")
+    profile_digest = hashlib.sha256(profile_path.read_bytes()).hexdigest()
     coordinate_frame = None
     if args.length_unit or args.up_axis or args.coordinate_reference:
         coordinate_frame = {
@@ -103,6 +111,8 @@ def main() -> int:
         "captureManifest": str(manifest_path),
         "pipelineState": str(pipeline_path),
         "sceneDomain": args.scene_domain,
+        "topologyProfile": args.profile,
+        "topologyProfileDigest": profile_digest,
         "discoveryCounts": manifest["counts"],
         "state": state,
         "blockedCapabilities": manifest["blockedCapabilities"],

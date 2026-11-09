@@ -10,6 +10,16 @@ on:
       - 'tests/scene-v2/test_panorama_rectilinear.py'
       - 'scripts/presentation_alignment.py'
       - 'scripts/validate_presentation_ifc.py'
+      - 'scripts/multiview_refinement.py'
+      - 'scripts/camera_control_refinement.py'
+      - 'scripts/multiview_batch.py'
+      - 'scene-core/multiview_fit.py'
+      - 'scene-core/camera_control_fit.py'
+      - 'scene-core/multiview_batch.py'
+      - 'scene-core/photo_projection.py'
+      - 'tests/test_multiview_refinement.py'
+      - 'tests/test_camera_control_refinement.py'
+      - 'tests/test_multiview_batch.py'
       - 'scripts/smoke_presentation.py'
       - 'scripts/sync_skills.py'
       - 'requirements*.txt'
@@ -27,6 +37,16 @@ on:
       - 'tests/scene-v2/test_panorama_rectilinear.py'
       - 'scripts/presentation_alignment.py'
       - 'scripts/validate_presentation_ifc.py'
+      - 'scripts/multiview_refinement.py'
+      - 'scripts/camera_control_refinement.py'
+      - 'scripts/multiview_batch.py'
+      - 'scene-core/multiview_fit.py'
+      - 'scene-core/camera_control_fit.py'
+      - 'scene-core/multiview_batch.py'
+      - 'scene-core/photo_projection.py'
+      - 'tests/test_multiview_refinement.py'
+      - 'tests/test_camera_control_refinement.py'
+      - 'tests/test_multiview_batch.py'
       - 'scripts/smoke_presentation.py'
       - 'scripts/sync_skills.py'
       - 'requirements*.txt'
@@ -57,4 +77,5 @@ jobs:
       - run: python scripts/sync_skills.py --check
       - run: python -m pytest -q tests/test_presentation_evidence_fast.py tests/test_presentation_alignment.py tests/test_presentation_ifc.py tests/test_presentation_delivery_inventory.py tests/test_presentation_brand_asset.py
       - run: python -m pytest -q tests/scene-v2/test_panorama_rectilinear.py
+      - run: python -m pytest -q tests/test_multiview_refinement.py tests/test_camera_control_refinement.py tests/test_multiview_batch.py
       - run: python scripts/smoke_presentation.py --work "${{ runner.temp }}/presentation-smoke"

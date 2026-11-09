@@ -114,7 +114,7 @@ const translations = {
     inspector: '检查器', selectElement: '请选择一个元素', selectHint: '点击模型或左侧对象列表，查看点云测量值和本地识别依据。',
     qualityLoop: '复核质量循环', visualEvidence: '本地视觉证据', posedPhotos: '位姿照片', evidencePhotoAlt: '最近相机证据帧',
     evidenceCaptionDefault: '自动选择覆盖范围互补的本地帧，不上传。', previewPoints: '预览点', acceptedStructures: '已接受结构', displayStructures: '展示结构', authorityDisplayStructures: '实测权威 / 展示结构', localElements: '本地元素', estimatedHeight: '估计层高',
-    all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', generic: '待确认', 'booth-desk': '卡座工作台', tree: '树木', vehicle: '车辆', 'roof-panel': '雨棚屋面', step: '台阶', tripod: '测量三脚架', signboard: '招牌',
+    all: '全部', table: '桌', workstation: '双面工位', 'wall-workbench': '沿墙工作台', 'round-table': '圆桌', 'oval-table': '椭圆桌', 'meeting-table': '会议桌', chair: '椅', sofa: '座椅组', cabinet: '柜体', 'display-screen': '移动大屏', generic: '待确认', 'booth-desk': '卡座工作台', tree: '树木', vehicle: '车辆', 'roof-panel': '雨棚屋面', step: '台阶', tripod: '测量三脚架', signboard: '招牌',
     autoReviewed: '自动建议已完成人工取舍', geometryClosed: '几何闭合', publishedClosed: '正式闭合', shapeFailure: '形状失败', retained: '保留',
     evidenceFrame: '证据帧', originalFrame: '原始帧', localPreview: '本地预览', measuredSize: '测量尺寸', localConfidence: '本地置信度', supportPoints: '支持点数',
     heightEvidence: '桌面高度依据', ruleEvidence: '规则依据', occlusionCompletion: '遮挡补全', materialEvidence: '照片材质判断', status: '状态', noCompletion: '未使用推断补全', unconfirmed: '未确认',
@@ -137,7 +137,7 @@ const translations = {
     inspector: 'Object Inspector', selectElement: 'Select an object', selectHint: 'Select an object in the model or list to inspect measurements and supporting evidence.',
     qualityLoop: 'Quality Assurance', visualEvidence: 'Spatial Evidence', posedPhotos: 'Registered Photos', evidencePhotoAlt: 'Nearest registered evidence frame',
     evidenceCaptionDefault: 'Locally selected complementary evidence frames. Nothing is uploaded.', previewPoints: 'Preview Points', acceptedStructures: 'Approved Structures', displayStructures: 'Display Geometry', authorityDisplayStructures: 'Measured authority / display geometry', localElements: 'Reconstructed Objects', estimatedHeight: 'Estimated Height',
-    all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk', tree: 'Tree', vehicle: 'Vehicle', 'roof-panel': 'Roof Panel', step: 'Step', tripod: 'Survey Tripod', signboard: 'Signboard',
+    all: 'All', table: 'Table', workstation: 'Double Workstation', 'wall-workbench': 'Wall Workbench', 'round-table': 'Round Table', 'oval-table': 'Oval Table', 'meeting-table': 'Meeting Table', chair: 'Chair', sofa: 'Seating', cabinet: 'Cabinet', 'display-screen': 'Mobile Display', generic: 'Unclassified', 'booth-desk': 'Built-in Booth Desk', tree: 'Tree', vehicle: 'Vehicle', 'roof-panel': 'Roof Panel', step: 'Step', tripod: 'Survey Tripod', signboard: 'Signboard',
     autoReviewed: 'AI proposals completed human review', geometryClosed: 'Geometry closure', publishedClosed: 'Approved closure', shapeFailure: 'Shape issue', retained: 'Retained',
     evidenceFrame: 'Evidence Frame', originalFrame: 'Source frame', localPreview: 'Local preview', measuredSize: 'Measured Size', localConfidence: 'Local Confidence', supportPoints: 'Supporting Points',
     heightEvidence: 'Height Evidence', ruleEvidence: 'Decision Evidence', occlusionCompletion: 'Occlusion Completion', materialEvidence: 'Photo Material', status: 'Status', noCompletion: 'No inferred completion', unconfirmed: 'Unconfirmed',
@@ -366,6 +366,16 @@ function buildWallWorkbench(group, object) {
   const count = object.layout?.seatCount || Math.max(1, Math.round(object.size[0] / 1.4));
   const side = object.layout?.seatSide || 1;
   const offsets = object.layout?.chairOffsetsM || [];
+  const monitorCount = Math.max(0, object.layout?.screenCount ?? count);
+  for (let index = 0; index < monitorCount; index += 1) {
+    const x = -object.size[0] / 2 + (index + 0.5) * object.size[0] / monitorCount;
+    const monitor = new THREE.Group();
+    monitor.position.set(x, object.size[1] + 0.20, -side * object.size[2] * 0.24);
+    monitor.rotation.y = side > 0 ? Math.PI : 0;
+    addBox(monitor, [Math.min(0.52, object.size[0] / monitorCount * 0.62), 0.30, 0.035], [0, 0, 0], standardMaterial(0x172d39, { metalness:0.12, roughness:0.22 }));
+    addBox(monitor, [0.035, 0.14, 0.035], [0, -0.21, 0], standardMaterial(0x20282d, { metalness:0.18, roughness:0.46 }));
+    group.add(monitor);
+  }
   for (let index = 0; index < count; index += 1) {
     const chair = new THREE.Group();
     const chairClearance = THREE.MathUtils.clamp(object.layout?.chairClearanceM ?? 0.56, 0.42, 0.58);
@@ -430,6 +440,26 @@ function buildCabinet(group, object) {
   for (const x of [-width * 0.25, width * 0.25]) {
     addBox(group, [width * 0.49 - doorGap, height * 0.91, 0.025], [x, height * 0.51, depth / 2 + 0.014], front);
     addBox(group, [0.025, Math.min(0.22, height * 0.18), 0.035], [x + Math.sign(-x || 1) * width * 0.12, height * 0.55, depth / 2 + 0.045], handle);
+  }
+}
+
+function buildDisplayScreen(group, object) {
+  const [rawWidth, rawHeight, rawDepth] = object.size;
+  const width = THREE.MathUtils.clamp(rawWidth, 0.9, 3.4);
+  const height = THREE.MathUtils.clamp(rawHeight, 0.55, 1.9);
+  const depth = THREE.MathUtils.clamp(rawDepth, 0.055, 0.22);
+  const baseHeight = THREE.MathUtils.clamp(object.layout?.screenBaseHeightM ?? 0.72, 0.45, 1.45);
+  const bezel = standardMaterial(0x20282c, { metalness:0.35, roughness:0.34 });
+  const screen = standardMaterial(object.color || '#4d8f7e', { metalness:0.05, roughness:0.18 });
+  addBox(group, [width, height, depth], [0, baseHeight + height / 2, 0], bezel);
+  addBox(group, [width * 0.94, height * 0.89, depth * 0.10], [0, baseHeight + height / 2, depth / 2 + 0.008], screen);
+  const postHeight = baseHeight;
+  for (const x of [-width * 0.36, width * 0.36]) {
+    addBox(group, [0.055, postHeight, 0.055], [x, postHeight / 2, 0], bezel);
+    addBox(group, [0.46, 0.045, 0.055], [x, 0.04, 0], bezel);
+    for (const footX of [-0.19, 0.19]) {
+      addCylinder(group, 0.035, 0.035, [x + footX, 0.025, 0], bezel, [Math.PI / 2, 0, 0]);
+    }
   }
 }
 
@@ -578,6 +608,7 @@ function buildObject(object) {
     case 'chair': buildChair(group, object); break;
     case 'sofa': buildSofa(group, object); break;
     case 'cabinet': buildCabinet(group, object); break;
+    case 'display-screen': buildDisplayScreen(group, object); break;
     case 'tree': buildTree(group, object); break;
     case 'vehicle': buildVehicle(group, object); break;
     case 'roof-panel': buildRoofPanel(group, object); break;
@@ -1044,6 +1075,16 @@ function showPhoto(index) {
   const alignButton = document.querySelector('#photo-align-enter');
   alignButton.hidden = !Array.isArray(photo.transformMatrix);
   alignButton.dataset.photoIndex = String(index);
+}
+
+function resolveSceneAssetPaths(data, scenePath) {
+  const sceneUrl = new URL(scenePath, window.location.href);
+  data.photos = (data.photos || []).map((photo) => ({
+    ...photo,
+    sourceFile: photo.sourceFile || photo.path,
+    path: new URL(photo.path, sceneUrl).toString(),
+  }));
+  return data;
 }
 
 function findClosestPreview(object) {
@@ -2007,6 +2048,7 @@ async function init() {
     // The raw graph is kept for the review panel (statuses + evidence).
     rawSceneV2 = isSceneV2(sceneData) ? sceneData : null;
     if (rawSceneV2) sceneData = compileSceneV2(rawSceneV2);
+    sceneData = resolveSceneAssetPaths(sceneData, scenePath);
     adaptFogToScene(sceneData);
     buildGround(sceneData.focusEnvelope);
     buildWalls(sceneData.walls);
@@ -2027,6 +2069,7 @@ async function init() {
           let next = JSON.parse(text);
           rawSceneV2 = isSceneV2(next) ? next : null;
           if (rawSceneV2) next = compileSceneV2(rawSceneV2);
+          next = resolveSceneAssetPaths(next, scenePath);
           sceneData = next;
           rebuildScene(sceneData);
           canvas.dataset.sceneRebuildAt = String(Date.now());

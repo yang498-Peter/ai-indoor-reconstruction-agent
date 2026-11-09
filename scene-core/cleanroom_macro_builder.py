@@ -10,20 +10,24 @@ separate display transform levels the floor for Three.js.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import shutil
 import struct
 import tempfile
 from typing import Any
+import uuid
 
 import cv2
 import numpy as np
 
 import cleanroom_scene_builder as base
 from capture_index import CaptureIndex
+import execution_identity as execution_identity_api
 
 
 def _atomic_bytes(path: Path, payload: bytes) -> None:
@@ -47,6 +51,57 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _author_execution(index_fingerprint: str) -> dict[str, Any]:
+    run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"cleanroom-macro:{index_fingerprint}"))
+    return {
+        "schemaVersion": "1.0",
+        "actorId": "cleanroom-macro-builder",
+        "runId": run_id,
+        "role": "author",
+        "provider": "codex-local",
+        "model": "gpt-5",
+        "policyId": "author-v1",
+        "toolPolicyHash": execution_identity_api.policy_digest("author-v1"),
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "attestation": {"issuer": "codex-workspace", "enforcementMode": "sandbox-enforced"},
+    }
+
+
+def _bind_author_execution(scene: dict[str, Any], execution: dict[str, Any]) -> None:
+    normalized = execution_identity_api.normalize_identity(execution)
+    scene.setdefault("meta", {}).setdefault("executions", {})[normalized["runId"]] = normalized
+    identity_digest = execution_identity_api.identity_digest(normalized)
+    for node in scene.get("nodes", {}).values():
+        meta = node.setdefault("meta", {})
+        meta.setdefault("createdBy", normalized["actorId"])
+        meta["createdRunId"] = normalized["runId"]
+        meta["createdIdentityDigest"] = identity_digest
+
+
+def _export_photos(photos: list[dict[str, Any]], transforms_path: Path | None, output: Path) -> None:
+    if transforms_path is None:
+        return
+    source_root = (transforms_path.parent / "undistort").resolve()
+    for photo in photos:
+        raw_path = str(photo.get("path") or "")
+        relative = Path(raw_path)
+        if not raw_path or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"unsafe posed-photo path: {raw_path}")
+        source = (source_root / relative).resolve()
+        try:
+            source.relative_to(source_root)
+        except ValueError as error:
+            raise ValueError(f"posed-photo path escapes source root: {raw_path}") from error
+        if not source.is_file():
+            raise FileNotFoundError(f"posed photo is missing: {source}")
+        target = output / "photos" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        photo["sourceFile"] = raw_path.replace("\\", "/")
+        photo["path"] = f"photos/{relative.as_posix()}"
+        photo["sha256"] = _sha256(target)
 
 
 def _plane_z(plane: dict[str, float], x: np.ndarray | float, y: np.ndarray | float):
@@ -662,7 +717,27 @@ def _north_room_topology(walls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ) + ["panorama-inferred-east-sidewall"]
     rear_role = "panorama-inferred-rear-envelope"
     if rear_role not in role_to_id or len(divider_roles) != len(front_roles) + 1:
-        return []
+        accepted = [
+            (index, wall) for index, wall in enumerate(walls, 1)
+            if wall.get("presentationStatus") == "accepted-inferred"
+        ]
+        if len(accepted) != 4:
+            return []
+        tolerance_m = 0.06
+        for offset, (_, wall) in enumerate(accepted):
+            next_wall = accepted[(offset + 1) % len(accepted)][1]
+            if float(np.linalg.norm(
+                np.asarray(wall["end"], dtype=np.float64)
+                - np.asarray(next_wall["start"], dtype=np.float64)
+            )) > tolerance_m:
+                return []
+        return [{
+            "id": "main_open_office",
+            "boundaryNodeIds": [f"wall_clean{index:03d}" for index, _ in accepted],
+            "status": "accepted-inferred",
+            "confidence": min(float(wall.get("confidence", 0.0)) for _, wall in accepted),
+            "reason": "four accepted-inferred perimeter segments form one closed open-office shell; exact boundary endpoints remain inferred",
+        }]
     if any(role not in role_to_id for role in divider_roles):
         return []
     return [{
@@ -793,6 +868,24 @@ def build(
         interiors, picks_payload = _author_walls(author_picks_path)
         if picks_payload.get("indexFingerprint") != index.manifest["indexFingerprint"]:
             raise ValueError("author picks and CaptureIndex fingerprints differ")
+        picked_envelope = picks_payload.get("floorEnvelopeUV")
+        if picked_envelope is not None:
+            required = ("uMin", "uMax", "vMin", "vMax")
+            if not isinstance(picked_envelope, dict) or not all(key in picked_envelope for key in required):
+                raise ValueError("floorEnvelopeUV must contain uMin,uMax,vMin,vMax")
+            values = {key: float(picked_envelope[key]) for key in required}
+            if values["uMin"] >= values["uMax"] or values["vMin"] >= values["vMax"]:
+                raise ValueError("floorEnvelopeUV bounds must be ordered")
+            envelope.update(values)
+            envelope["width"] = values["uMax"] - values["uMin"]
+            envelope["depth"] = values["vMax"] - values["vMin"]
+            corners_uv = np.asarray([
+                [values["uMin"], values["vMin"]], [values["uMax"], values["vMin"]],
+                [values["uMax"], values["vMax"]], [values["uMin"], values["vMax"]],
+            ], dtype=np.float64)
+            floor_polygon = (corners_uv[:, :1] * u + corners_uv[:, 1:] * v).round(6).tolist()
+            center = np.mean(np.asarray(floor_polygon, dtype=np.float64), axis=0)
+            withheld_shell = _shell_walls(floor_polygon)
         interiors, panorama_band_enabled = _panorama_room_band(picks_payload, interiors, proposals)
         dividers = (_room_dividers(proposals, interiors, u, v, envelope, evidence_path,
                                    evidence_rel=evidence_rel, root_sha=root_sha)
@@ -804,8 +897,22 @@ def build(
         interiors = _interval_walls(proposals, u, v, axes, envelope)
     walls = interiors
     furniture_proposals = _furniture_items(index, floor_plane, u, v, envelope, output)
-    items: list[dict[str, Any]] = []
+    picked_furniture = (picks_payload or {}).get("furniture")
+    if picked_furniture is not None:
+        if not isinstance(picked_furniture, list):
+            raise ValueError("author picks furniture must be a list")
+        items = []
+        for index_value, item in enumerate(picked_furniture, 1):
+            if not isinstance(item, dict):
+                raise ValueError(f"furniture[{index_value}] must be an object")
+            required = ("center", "yaw", "size", "category", "confidence", "supportCells")
+            if not all(key in item for key in required):
+                raise ValueError(f"furniture[{index_value}] is missing required fields")
+            items.append(json.loads(json.dumps(item)))
+    else:
+        items = []
     photos = base._load_photos(transforms_path)
+    _export_photos(photos, transforms_path, output)
     source_meta = {
         "samplePointCount": int(index.manifest["inputPointCount"]),
         "inputPointCount": int(index.manifest["inputPointCount"]),
@@ -819,6 +926,27 @@ def build(
         evidence_rel, _sha256(evidence_path), _sha256(proposals_path), photos,
         proposal_path=proposals_rel, root_sha256=root_sha,
     )
+    author_execution = _author_execution(index.manifest["indexFingerprint"])
+    for scene in (hypothesis, presentation):
+        for item_index, item in enumerate(items, 1):
+            node = scene["nodes"][f"item_clean{item_index:03d}"]
+            node["name"] = str(item.get("name") or node["name"])
+            node["layout"] = json.loads(json.dumps(item.get("layout") or {}))
+            if item.get("color"):
+                node["color"] = str(item["color"])
+            if item.get("frameColor"):
+                node["frameColor"] = str(item["frameColor"])
+            if item.get("elevation") is not None:
+                node["elevation"] = float(item["elevation"])
+            if item.get("confidenceIntervalM"):
+                node["inference"]["confidenceIntervalM"] = [
+                    float(value) for value in item["confidenceIntervalM"]
+                ]
+            if item.get("reason"):
+                node["inference"]["inferenceReason"] = str(item["reason"])
+            node.setdefault("meta", {})["authorPickId"] = item.get("id")
+            node["meta"]["rawYaw"] = item.get("rawYaw")
+            node["meta"]["poseReason"] = item.get("reason")
     pipeline = [
         {"id": "intake", "label": "Clean-room raw capture", "status": "PASS"},
         {"id": "evidence", "label": "Indexed raw evidence", "status": "PASS"},
@@ -863,7 +991,12 @@ def build(
             )
         scene["review"]["issues"].append({
             "id": "cr-live-001", "severity": "P1", "status": "OPEN",
+            "kind": "regional-macro-review",
             "summary": "Interior walls, openings and furniture require regional review",
+            "openedBy": author_execution["actorId"],
+            "openedByRunId": author_execution["runId"],
+            "openedAt": author_execution["startedAt"],
+            "targetNodeIds": [],
         })
         for wall_index in range(1, len(walls) + 1):
             node = scene["nodes"][f"wall_clean{wall_index:03d}"]
@@ -899,9 +1032,11 @@ def build(
                 for opening in wall.get("openings", []):
                     opening_id = str(opening["id"])
                     base._add(scene, {
-                        "id": opening_id, "type": "opening", "parentId": node["id"], "children": [],
+                        "id": opening_id, "type": str(opening.get("type", "opening")),
+                        "parentId": node["id"], "children": [],
                         "name": opening_id, "hostOffsetM": float(opening["offsetM"]),
-                        "width": float(opening["width"]), "height": float(opening["height"]), "sillHeight": 0.0,
+                        "width": float(opening["width"]), "height": float(opening["height"]),
+                        "sillHeight": float(opening.get("sillHeight", 0.0)),
                     }, {
                         "status": evidence_status,
                         "sources": [local_source, base._evidence_source(
@@ -971,10 +1106,32 @@ def build(
                 "reason": "visual-inferred furniture pending instance-level raw fit and collision review",
             }
 
+    # Scene V2 acceptance is a reviewer transaction, not a builder shortcut.
+    # Keep generated geometry visible as candidates until scene_api.accept binds
+    # the current claim, verified sources, and an independent reviewer identity.
+    for scene in (hypothesis, presentation):
+        for entry in scene.get("evidence", {}).values():
+            entry["status"] = "candidate"
+            for field in (
+                "reviewer", "acceptedAt", "claimSnapshot", "claimHash",
+                "acceptedSourceDigest", "legacyDisposition",
+            ):
+                entry.pop(field, None)
+
     inferred_spaces = _north_room_topology(walls)
     for scene in (hypothesis, presentation):
         scene["review"]["topology"]["spaces"] = inferred_spaces
 
+    for scene in (authority, hypothesis, presentation):
+        _bind_author_execution(scene, author_execution)
+
+    # Candidate sources are attached through scene_api after the builder exits,
+    # so each file hash, producer and root lineage is computed by the API.
+    for scene in (hypothesis, presentation):
+        for entry in scene.get("evidence", {}).values():
+            entry["sources"] = []
+
+    base._atomic_json(output / "author-execution.json", author_execution)
     base._atomic_json(output / "scene-authority.json", authority)
     authority_sha = _sha256(output / "scene-authority.json")
     hypothesis["bindings"] = {"authoritySha256": authority_sha}

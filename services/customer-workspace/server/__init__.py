@@ -1,0 +1,1 @@
+"""Isolated customer workspace service."""

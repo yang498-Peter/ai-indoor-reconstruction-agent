@@ -101,7 +101,10 @@ def compile_scene_v2_for_review(scene: dict) -> dict:
             objects.append({
                 "id": node["id"], "category": node.get("category", "item"),
                 "center": [node["center"][0], node.get("elevation", 0), -node["center"][1]],
-                "yaw": -float(node.get("yaw", 0)), "size": list(node.get("size", [0, 0, 0])),
+                # Keep the same source-yaw convention as scene-core.js.  The
+                # source-to-display Y reflection is already accounted for by
+                # the Three.js/box rotation convention.
+                "yaw": float(node.get("yaw", 0)), "size": list(node.get("size", [0, 0, 0])),
                 "color": node.get("color", "#e3dfd2"), "layout": node.get("layout", {}),
                 "deliveryValidation": {"status": "PASS"}, "_atomicV2": True,
             })
@@ -120,7 +123,9 @@ def add_chairs(axis, item: dict) -> int:
     center = np.asarray([item["center"][0], item["center"][2]], dtype=float)
     positions = []
     if category == "workstation":
-        total = max(0, int(layout.get("seatCount", 4)))
+        total = max(0, int(layout.get(
+            "seatCount", 2 * int(layout.get("seatsPerSide", 2))
+        )))
         slots = math.ceil(total / 2) if total else 1
         clearance = min(0.58, max(0.42, float(layout.get("chairClearanceM", 0.56))))
         positions = [(-width / 2 + (index // 2 + .5) * width / slots,

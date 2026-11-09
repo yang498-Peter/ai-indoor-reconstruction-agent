@@ -4,47 +4,84 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  validate:
-    runs-on: windows-latest
+  deterministic-python:
+    name: python-${{ matrix.python-version }}-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
+      - name: Install locked environment
+        run: |
+          python -m pip install uv==0.12.5
+          uv sync --locked --all-groups --python python
+      - name: Validate portable checkout and skill migration
+        run: |
+          uv run python scripts/validate_portable_repo.py
+          uv run python scripts/sync_skills.py --check
+      - name: Run Python contracts, MCP smoke, and synthetic E2E
+        run: uv run python -m pytest -q
+      - name: Run customer workspace synthetic contracts
+        working-directory: services/customer-workspace
+        run: uv run --project ../.. python -m unittest discover -s tests -v
+      - name: Run presentation exchange smoke
+        run: uv run python scripts/smoke_presentation.py --work "${{ runner.temp }}/presentation-smoke"
+      - name: Run quick benchmark
+        run: uv run indoor-recon benchmark --output outputs/ci-benchmark-report.json
+      - name: Preserve benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: outputs/ci-benchmark-report.json
+          if-no-files-found: error
+
+  node-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r requirements.txt
-      - run: python scripts/validate_portable_repo.py
-      - run: python tests/codex-scan/bh-20260812-reconstruction-orchestrator.test.py
-      - run: python tests/contracts/test_stage_contract.py
-      - run: python tests/contracts/test_v2_publish_contract.py
-      - run: python tests/contracts/test_capture_readiness.py
-      - run: python tests/contracts/test_evidence_independence.py
-      - run: python tests/contracts/test_execution_identity.py
-      - run: python tests/contracts/test_pipeline_execution_identity.py
-      - run: python tests/contracts/test_intake_revalidation.py
-      - run: python tests/contracts/test_check_recompute.py
-      - run: python tests/scene-v2/test_degraded_geometry_services.py
-      - run: python tests/scene-v2/test_opening_candidates.py
-      - run: python tests/scene-v2/test_wall_graph_adjust.py
-      - run: python tests/scene-v2/test_candidate_topology.py
-      - run: python tests/scene-v2/test_fit_service.py
-      - run: python tests/scene-v2/test_level_survey.py
-      - run: python tests/scene-v2/test_photo_projection.py
-      - run: python tests/scene-v2/test_semantic_candidates.py
-      - run: python tests/scene-v2/test_wall_dossier.py
-      - run: python tests/scene-v2/test_scene_api.py
-      - run: python tests/scene-v2/test_geometry_pipeline.py
-      - run: python tests/scene-v2/test_geometry_workflow.py
-      - run: python tests/scene-v2/test_wall_metrics_v2.py
-      - run: python tests/scene-v2/test_mcp_server.py
-      - run: python tests/scene-v2/test_static_renderers_v2.py
-      - run: python tests/scene-v2/test_structural_omission_audit.py
-      - run: python tests/scene-v2/test_scene_evidence_overlay.py
-      - run: python tests/scene-v2/test_cleanroom_macro_builder.py
-      - run: python tests/scene-v2/test_indexed_pointcloud_evidence.py
-      - run: python tests/scene-v2/test_viewer_presentation_stats.py
-      - run: node --test tests/scene-v2/scene-core.test.mjs
-      - run: python scene-core/make_sample_scene.py --output sample-out
+      - run: node --test tests/scene-v2/*.test.mjs services/customer-workspace/frontend/tests/preflight.test.cjs
+
+  lint-type-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked environment
+        run: |
+          python -m pip install uv==0.12.5
+          uv sync --locked --all-groups --python python
+      - run: uv run ruff check src tests/contracts/test_wp8_engineering.py
+      - run: uv run mypy
+      - run: uv build
+      - run: uv run indoor-recon --help
+
+  deterministic-checks:
+    if: always()
+    needs: [deterministic-python, node-contract, lint-type-package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all deterministic checks
+        env:
+          PYTHON_RESULT: ${{ needs.deterministic-python.result }}
+          NODE_RESULT: ${{ needs.node-contract.result }}
+          PACKAGE_RESULT: ${{ needs.lint-type-package.result }}
+        run: |
+          test "$PYTHON_RESULT" = success
+          test "$NODE_RESULT" = success
+          test "$PACKAGE_RESULT" = success

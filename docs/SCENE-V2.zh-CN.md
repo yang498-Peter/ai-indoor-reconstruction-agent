@@ -53,7 +53,8 @@ python scene-core\capture_readiness.py validate-pose --manifest work\capture-man
 | --- | --- |
 | `scene-core/semantic-scene-v2.schema.json` | V2 契约（唯一权威 schema，消除 V1 的 schema drift） |
 | `scene-core/scene_api.py` | Agent 变更 API：所有编辑走命令，不再手改 JSON |
-| `scene-core/mcp_server.py` | MCP stdio server：scene_api 的 23 个工具面，纯 stdlib |
+| `src/indoor_reconstruction/mcp/server.py` | 官方 MCP Python SDK stdio/内存 transport、能力协商与结构化结果 |
+| `scene-core/mcp_server.py` | Scene API 的工具目录与领域适配器，不再自行实现 JSON-RPC framing |
 | `scene-core/scene-core.js` | 编译层：joinery（miter/T 嵌入）、门窗真开洞、视图模型 |
 | `scene-core/pointcloud_evidence.py` | 点云证据生成：正射/高程带切片/任意断面，含像素↔米映射 |
 | `scene-core/candidate_topology.py` | observation/hypothesis 分层、连续片段、区域轴和全局房间拓扑候选（只读） |

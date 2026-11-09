@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/benchmark-report-v1.schema.json",
+  "title": "Indoor reconstruction benchmark report V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "artifactType", "suite", "status", "createdAt", "producer",
+    "inputs", "fixtureDigest", "metrics", "deltas", "gates", "thresholds", "limitations",
+    "configuration", "payloadDigest"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "artifactType": {"const": "benchmark-report"},
+    "suite": {"const": "synthetic-wall-v1"},
+    "status": {"enum": ["PASS", "REVIEW", "FAIL"]},
+    "createdAt": {"type": "string", "minLength": 1},
+    "payloadDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fixtureDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "gitSha", "codeSha256", "command", "configDigest", "environmentDigest", "randomSeed"],
+      "properties": {
+        "name": {"const": "indoor-recon"},
+        "version": {"type": "string"},
+        "gitSha": {"type": "string"},
+        "codeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "configDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "environmentDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "randomSeed": {"const": 0}
+      }
+    },
+    "inputs": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["artifactType", "payloadDigest"],
+        "properties": {
+          "artifactType": {"type": "string"},
+          "payloadDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "metrics": {"type": "object"},
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wallEvaluation", "regressionThresholds"],
+      "properties": {
+        "wallEvaluation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["residualP90MaxM", "supportRatioMin", "supportToleranceM", "binSizeM"],
+          "properties": {
+            "residualP90MaxM": {"const": 0.08},
+            "supportRatioMin": {"const": 0.8},
+            "supportToleranceM": {"const": 0.04},
+            "binSizeM": {"const": 0.1}
+          }
+        },
+        "regressionThresholds": {"type": "object"}
+      }
+    },
+    "deltas": {"type": "object", "additionalProperties": {"type": "number"}},
+    "limitations": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "PERFORMANCE_BASELINE_NOT_PROVIDED",
+          "PERFORMANCE_BASELINE_ENVIRONMENT_MISMATCH",
+          "REAL_CAPTURE_NOT_PROVIDED"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "gates": {
+      "type": "object", "additionalProperties": false,
+      "required": ["keyMetrics", "performanceRegression", "realCaptureRegression"],
+      "properties": {
+        "keyMetrics": {"enum": ["PASS", "FAIL"]},
+        "performanceRegression": {"enum": ["PASS", "NOT_RUN", "FAIL"]},
+        "realCaptureRegression": {"const": "NOT_RUN"}
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxKeyMetricRegressionRatio", "maxPerformanceRegressionRatio"],
+      "properties": {
+        "maxKeyMetricRegressionRatio": {"const": 0.02},
+        "maxPerformanceRegressionRatio": {"const": 0.15}
+      }
+    }
+  }
+}

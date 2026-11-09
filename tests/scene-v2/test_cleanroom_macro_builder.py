@@ -57,6 +57,24 @@ class PanoramaCompletionTest(unittest.TestCase):
         self.assertEqual(len(spaces), 2)
         self.assertTrue(all(len(space["boundaryNodeIds"]) == 4 for space in spaces))
 
+    def test_closed_four_wall_shell_declares_one_open_office_space(self):
+        walls = [
+            {"start": [0.0, 0.0], "end": [4.0, 0.0], "role": "south", "presentationStatus": "accepted-inferred", "confidence": 0.82},
+            {"start": [4.0, 0.0], "end": [4.0, 3.0], "role": "east", "presentationStatus": "accepted-inferred", "confidence": 0.80},
+            {"start": [4.0, 3.0], "end": [0.0, 3.0], "role": "north", "presentationStatus": "accepted-inferred", "confidence": 0.78},
+            {"start": [0.0, 3.0], "end": [0.0, 0.0], "role": "west", "presentationStatus": "accepted-inferred", "confidence": 0.79},
+        ]
+
+        spaces = macro._north_room_topology(walls)
+
+        self.assertEqual(spaces, [{
+            "id": "main_open_office",
+            "boundaryNodeIds": ["wall_clean001", "wall_clean002", "wall_clean003", "wall_clean004"],
+            "status": "accepted-inferred",
+            "confidence": 0.78,
+            "reason": "four accepted-inferred perimeter segments form one closed open-office shell; exact boundary endpoints remain inferred",
+        }])
+
 
 class _StubQuery:
     def __init__(self):
