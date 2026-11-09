@@ -12,7 +12,7 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 BANNED_SUFFIXES = {".las", ".laz", ".e57", ".ply", ".pcd", ".mcap", ".bag", ".bin"}
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".mjs", ".ps1", ".py", ".txt", ".yaml", ".yml"}
 ABSOLUTE_PATH = re.compile(
-    r"(?i)(?:[A-Z]:[\\/](?:Users|cloudstudio|2026-|S1|MVP)|(?<![A-Za-z0-9_./-])/(?:home|Users)/)"
+    r"(?i)(?:[A-Z]:[\\/](?:Users|cloudstudio|2026-|S1|MVP)|file:///(?:home|Users)/|(?<![A-Za-z0-9_./-])/(?:home|Users)/)"
 )
 SECRET_TOKEN = re.compile(
     r"(?i)(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?<![A-Za-z])sk-[A-Za-z0-9_-]{16,})"

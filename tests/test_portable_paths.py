@@ -10,7 +10,7 @@ GUARD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GUARD)
 
 
-@pytest.mark.parametrize("prefix", ["", "'", '"', " ", "source="])
+@pytest.mark.parametrize("prefix", ["", "'", '"', " ", "source=", "file://"])
 @pytest.mark.parametrize("directory", ["home", "Users"])
 def test_private_posix_roots_remain_rejected(prefix, directory):
     assert GUARD.ABSOLUTE_PATH.search(prefix + "/" + directory + "/private-capture")
