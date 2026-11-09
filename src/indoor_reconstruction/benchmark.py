@@ -45,7 +45,7 @@ def _git_sha(root: Path) -> str:
 
 
 def _peak_rss_bytes() -> int | None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         try:
             import ctypes
             from ctypes import wintypes

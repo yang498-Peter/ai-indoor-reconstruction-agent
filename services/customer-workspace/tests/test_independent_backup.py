@@ -43,7 +43,7 @@ class BackupReview(unittest.TestCase):
         self.add_data(b'second synthetic file')
         original=backup_mod.shutil.copyfile;switched=[]
         def interleaved(source,target,*args,**kwargs):
-            if Path(source)==self.backup/'workspace.sqlite3' and not switched:
+            if Path(source).resolve()==(self.backup/'workspace.sqlite3').resolve() and not switched:
                 switched.append(True)
                 try:backup_mod.backup(self.data,self.backup,min_free=0)
                 except LockBusy:pass
