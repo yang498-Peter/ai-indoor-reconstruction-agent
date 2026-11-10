@@ -331,6 +331,7 @@ dependencies = [
 presentation = [
     { name = "ifcopenshell" },
     { name = "lazrs" },
+    { name = "pytest" },
     { name = "trimesh" },
 ]
 
@@ -356,6 +357,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26,<2.4" },
     { name = "opencv-python-headless", specifier = ">=4.9,<5" },
     { name = "pillow", specifier = ">=10,<12" },
+    { name = "pytest", marker = "extra == 'presentation'", specifier = "==9.1.1" },
     { name = "scipy", specifier = ">=1.12,<2" },
     { name = "shapely", specifier = ">=2.0,<3" },
     { name = "trimesh", marker = "extra == 'presentation'", specifier = "==4.12.2" },

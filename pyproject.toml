@@ -25,7 +25,8 @@ dependencies = [
 indoor-recon = "indoor_reconstruction.cli:main"
 
 [project.optional-dependencies]
-presentation = ["ifcopenshell==0.8.5", "trimesh==4.12.2", "lazrs==0.8.2"]
+# IfcOpenShell EXPRESS rule execution imports _pytest.assertion at runtime.
+presentation = ["ifcopenshell==0.8.5", "trimesh==4.12.2", "lazrs==0.8.2", "pytest==9.1.1"]
 
 [dependency-groups]
 dev = [
