@@ -1,35 +1,69 @@
-"""Locate and load the checked-in domain implementation during migration."""
+"""Resolve package-owned runtime resources without consulting the caller CWD."""
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
 
 
 class RepositoryLayoutError(RuntimeError):
-    """Raised when a command requiring the portable checkout cannot find it."""
+    """A required runtime resource is absent, conflicting, or corrupt."""
 
 
 def repository_root() -> Path:
-    candidates = [Path.cwd(), Path(__file__).resolve()]
-    for candidate in candidates:
-        for parent in (candidate, *candidate.parents):
-            if (parent / "schemas" / "pipeline-contract-v2.json").is_file() and (
-                parent / "scene-core" / "scene_api.py"
-            ).is_file():
-                return parent
+    package = Path(__file__).resolve().parent
+    bundled = package / "_runtime"
+    if bundled.is_dir():
+        _verify_runtime(bundled)
+        return bundled
+    # Editable/source execution is bound to this module's checkout, never CWD.
+    source = package.parent.parent
+    if (source / "runtime-files.json").is_file() and (
+        source / "scene-core/scene_api.py"
+    ).is_file():
+        return source
     raise RepositoryLayoutError(
-        "REPOSITORY_LAYOUT_REQUIRED: run this command from a portable checkout containing schemas/ and scene-core/"
+        "RUNTIME_RESOURCES_MISSING: reinstall the indoor-reconstruction-agent distribution"
     )
 
 
+def _verify_runtime(root: Path) -> None:
+    try:
+        manifest = json.loads((root / "runtime-manifest.json").read_text(encoding="utf-8"))
+        files = manifest["files"]
+        if not {"schemas/pipeline-contract-v2.json", "scene-core/scene_api.py"}.issubset(files):
+            raise ValueError("required runtime resources missing")
+        calculated = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if manifest["format"] != "indoor-recon-runtime-v1" or calculated != manifest["bundleDigest"]:
+            raise ValueError("invalid manifest")
+        for relative, expected in files.items():
+            path = root / relative
+            if (
+                not isinstance(relative, str) or "\\" in relative or ":" in relative
+                or Path(relative).is_absolute() or ".." in Path(relative).parts
+                or path.is_symlink() or not path.resolve().is_relative_to(root.resolve())
+            ):
+                raise ValueError("invalid resource path")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise RepositoryLayoutError("RUNTIME_RESOURCE_HASH_MISMATCH:" + relative)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RepositoryLayoutError("RUNTIME_MANIFEST_INVALID: reinstall the distribution") from error
+
+
 def load_repo_module(name: str, relative_path: str) -> ModuleType:
+    root = repository_root()
+    path = (root / relative_path).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise RepositoryLayoutError("RUNTIME_RESOURCE_UNAVAILABLE: required module is not in this runtime")
     existing = sys.modules.get(name)
     if existing is not None:
+        if Path(str(getattr(existing, "__file__", ""))).resolve() != path:
+            raise RepositoryLayoutError("RUNTIME_MODULE_CONFLICT:" + name)
         return existing
-    path = repository_root() / relative_path
     module_directory = str(path.parent)
     if module_directory not in sys.path:
         # The legacy scene-core modules still use sibling imports while they

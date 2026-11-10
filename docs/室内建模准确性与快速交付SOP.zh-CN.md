@@ -6,7 +6,7 @@
 
 ## 1. 启动：确认数据和输出类型
 
-1. 读取仓库指令与 `git status --short`，保护已有修改。确认是展示优化、几何测量，还是正式发布，不混淆完成口径。
+1. 安装用户先按[迁移说明](PORTABILITY.zh-CN.md)安装同版本 wheel 与依赖约束，运行 `indoor-recon doctor --json`、`indoor-recon smoke --work smoke-001`。开发源码时另读仓库指令与 `git status --short`，保护已有修改。确认是展示优化、几何测量，还是正式发布，不混淆完成口径。
 2. 定位单一采集单元的实际点云、照片、位姿、标定和生成器。旧盘符、旧页面与截图仅用于查找，不替代源指纹。
 3. 确认单位、Z-up、坐标系/本地参考系、原点和轴旋转。检查源基轴到显示基轴的映射，再判断方位；屏幕右侧不自动等于地理东侧。
 4. 在 capture 目录之外建立独立工作目录，按源指纹和变换绑定。复用缓存，不继承旧场景坐标、房间数或验收结论。
@@ -17,7 +17,7 @@
 
 ## 2. 快速取证：一次准备，按问题裁切
 
-先激活项目可用的 Python 环境，命令从仓库根目录执行。已验证环境为 Python 3.12，依赖 numpy、laspy、matplotlib、Pillow；LAZ 另需可用解码后端。不要盲目重装依赖。
+先激活项目可用的 Python 环境。安装用户从自己的项目目录运行 `indoor-recon evidence prepare`、`indoor-recon evidence region`；下文保留的 `python scripts/indoor_presentation_evidence.py` 是开发 checkout 中的等价入口。其他脚本对应 `camera-control`、`multiview`、`multiview-batch`、`alignment`、`ifc-check`，以各命令的 `--help` 为准。已验证环境为 Python 3.12，依赖 numpy、laspy、matplotlib、Pillow；LAZ 另需可用解码后端。不要盲目重装依赖。
 
 ```powershell
 python -X utf8 scripts/indoor_presentation_evidence.py prepare --help
@@ -136,6 +136,8 @@ if ($LASTEXITCODE -ne 0) { throw '区域取证失败，不能沿用旧图作为�
 6. 交付网页、已处理区域、未知部分、推测范围、源与结果身份、验证结果和启动方式。服务是否运行要当场核实。
 
 ### 代码与建模成果归档
+
+新电脑优先按[独立安装说明](PORTABILITY.zh-CN.md#安装发行包)安装同版本 wheel 和约束文件，运行 `indoor-recon doctor --json` 与新的合成 `smoke --work`。0.9.0 起的发行包携带领域代码、Schema、策略和模板，不要求复制完整 checkout。工具环境与客户数据分别迁移；先核对旧成果哈希和路径绑定，再进入真实任务。合成冒烟不改变旧场景、状态或验收结论。
 
 交付结束时分别闭合工具版本和私有成果版本。先检查各工作树、暂存区和未跟踪文件，再列出应提交的可复用代码；含客户坐标、原图、模型和现场记录的文件保留在私有成果目录，按清单和哈希核对，不能仅靠 `.gitignore` 当作备份。
 

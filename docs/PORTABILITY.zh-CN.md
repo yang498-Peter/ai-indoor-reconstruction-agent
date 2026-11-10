@@ -1,5 +1,24 @@
 # 跨电脑迁移与数据边界
 
+## 安装发行包
+
+从 0.9.0 起，运行工具无需完整 checkout 或 Git。发行物为 `indoor_reconstruction_agent-0.9.0-py3-none-any.whl`、源码包及 `constraints-runtime.txt`。Python 3.11/3.12 的 Windows/Linux 是验证目标；其他平台需要另行验证依赖轮子和系统运行库。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -c constraints-runtime.txt "./indoor_reconstruction_agent-0.9.0-py3-none-any.whl[presentation]"
+.\.venv\Scripts\indoor-recon.exe doctor --json
+.\.venv\Scripts\indoor-recon.exe smoke --work smoke-001
+```
+
+Linux/macOS 的命令路径为 `.venv/bin/`；macOS 不属于本次自动化验证结论。基础 CLI/MCP 可以省略 `[presentation]`；IFC、网格和完整合成冒烟使用该 extra。约束文件来自同一 `uv.lock`，避免另一台电脑无意升级运行依赖。完整权威流程若调用 JavaScript 几何检查，需自行安装 Node 22，未提供时保持对应门禁阻断。
+
+`doctor` 校核安装包的资源清单和哈希，并返回 `installed` 或开发态 `source`。资源与当前工作目录无关；缺失或损坏时明确失败，不借用旁边 checkout。不要把客户文件放入 site-packages，输出放到显式工作目录。
+
+新机器接续已有建模成果时，另外迁移私有原始数据、工作目录和交付清单，核对源、变换、生成器、模型和回执哈希。既有工作记录可能绑定旧路径，不能仅复制一个 job.json 就宣称已恢复；路径变化后的重新发现或适配必须沿用原门禁，禁止手改生成的状态或把旧回执升级为当前接受。
+
+开发者仍可按下文使用源码环境。发行包通过明确的 `runtime-files.json` 和构建钩子携带公共运行资源；本机未跟踪的脚本、模型、点云、客户图片、缓存不会被目录遍历收入发行物。
+
 ## Git 中保留
 
 - Python/JavaScript/HTML/CSS/PowerShell 源码；
@@ -18,7 +37,7 @@
 
 ## 新电脑恢复
 
-1. Clone 此公开工具仓库并创建独立 Python 虚拟环境。
+1. 按上文安装发行包并运行 doctor、smoke；只有开发源码时才需要 clone。
 2. 通过受控渠道把 capture 放到本机 `data/` 或外部磁盘。
 3. 运行 discovery，人工选择 capture unit 并确认 indoor domain。
 4. 用新 work 目录生成 capture manifest；不得复用另一数据集的账本。
@@ -47,7 +66,7 @@ Linux/macOS 使用 `.venv/bin/python` 替换 Python 路径。`smoke` 必须使�
 
 展示环境通过 `constraints-presentation-py312.txt` 约束已测试的依赖版本。升级时同时运行相关测试和合成冒烟，再更新约束；其他 Python 大版本和 CPU 架构需要另行确认依赖轮子可用性。该文件不是供应商 SDK 或外部软件许可证。
 
-默认使用仓库中的 canonical skill：`.agents/skills/reconstruct-indoor-scene/SKILL.md`。它引用根目录脚本、SOP 和 legacy 兼容流程，**不能只复制一个 SKILL.md 到另一台机器**。在 Codex 中打开完整 checkout 并指定该技能路径即可复用；其他代理也可以从入口读取链接。现有 `.codex/skills/` 用于兼容，不另行生成一套会漂移的副本。`sync_skills.py --check` 校核入口和本地参考，不是 GitHub 上传命令。
+开发态使用仓库中的 canonical skill：`.agents/skills/reconstruct-indoor-scene/SKILL.md`。发行包也携带该工作流及其参考资源，但 **单独复制一个 SKILL.md 仍不构成完整安装**。安装用户通过 `indoor-recon` 调用工具并按本文与 SOP 编排；编辑和同步技能源码时才使用 checkout。现有 `.codex/skills/` 用于兼容，不另行生成一套会漂移的副本。`sync_skills.py --check` 校核入口和本地参考，不是 GitHub 上传命令。
 
 ## 已提供的可复用工具
 

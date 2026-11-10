@@ -41,7 +41,8 @@ class PackagingAndCliContractTest(unittest.TestCase):
         )
         self.assertEqual(
             set(subcommands),
-            {"init", "status", "next", "run", "patch", "review", "evaluate", "publish", "mcp", "benchmark"},
+            {"init", "status", "next", "run", "patch", "review", "evaluate", "publish", "mcp", "benchmark",
+             "doctor", "multiview", "camera-control", "multiview-batch", "evidence", "alignment", "ifc-check", "smoke"},
         )
 
     def test_next_returns_one_typed_action_without_execution(self) -> None:

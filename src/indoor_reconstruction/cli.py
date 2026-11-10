@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,14 +14,36 @@ from typing import Sequence
 
 from .repository import RepositoryLayoutError, repository_root
 
+DELEGATED_TOOLS = {
+    "multiview": "scripts/multiview_refinement.py",
+    "camera-control": "scripts/camera_control_refinement.py",
+    "multiview-batch": "scripts/multiview_batch.py",
+    "evidence": "scripts/indoor_presentation_evidence.py",
+    "alignment": "scripts/presentation_alignment.py",
+    "ifc-check": "scripts/validate_presentation_ifc.py",
+    "smoke": "scripts/smoke_presentation.py",
+}
+
 
 def _work_file(work: Path, name: str) -> Path:
     return work.resolve() / name
 
 
 def _run_python(relative_script: str, arguments: Sequence[str]) -> int:
-    command = [sys.executable, str(repository_root() / relative_script), *arguments]
+    root = repository_root()
+    for index, argument in enumerate(arguments):
+        for option in ("--work", "--output", "--output-dir"):
+            if argument == option and index + 1 < len(arguments):
+                _protect_runtime_output(Path(arguments[index + 1]), root)
+            elif argument.startswith(option + "="):
+                _protect_runtime_output(Path(argument.split("=", 1)[1]), root)
+    command = [sys.executable, str(root / relative_script), *arguments]
     return subprocess.run(command, check=False).returncode
+
+
+def _protect_runtime_output(path: Path, root: Path) -> None:
+    if (root / "runtime-manifest.json").is_file() and path.resolve().is_relative_to(root):
+        raise ValueError("OUTPUT_IN_RUNTIME_FORBIDDEN: choose a project directory outside installed resources")
 
 
 def _add_work(parser: argparse.ArgumentParser) -> None:
@@ -94,6 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark = commands.add_parser("benchmark")
     benchmark.add_argument("--output", required=True, type=Path)
     benchmark.add_argument("--baseline", type=Path)
+    doctor = commands.add_parser("doctor", help="Verify installed runtime identity and dependencies")
+    doctor.add_argument("--json", action="store_true")
+    for name in DELEGATED_TOOLS:
+        commands.add_parser(name, help="Run the bundled " + name + " tool", add_help=False)
     return parser
 
 
@@ -221,8 +249,34 @@ def _command_patch(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
     try:
+        arguments = list(sys.argv[1:] if argv is None else argv)
+        if arguments and arguments[0] in DELEGATED_TOOLS:
+            name = arguments[0]
+            if name in {"alignment", "ifc-check", "smoke"}:
+                required = {"alignment": ["trimesh"], "ifc-check": ["ifcopenshell"],
+                            "smoke": ["trimesh", "ifcopenshell"]}[name]
+                if any(importlib.util.find_spec(module) is None for module in required):
+                    raise ValueError("PRESENTATION_EXTRA_REQUIRED: install indoor-reconstruction-agent[presentation]")
+            return _run_python(DELEGATED_TOOLS[name], arguments[1:])
+        args = build_parser().parse_args(arguments)
+        root = repository_root()
+        for attribute in ("work", "output", "scene"):
+            path = getattr(args, attribute, None)
+            if path is not None:
+                _protect_runtime_output(path, root)
+        if args.command == "doctor":
+            from . import __version__
+
+            root = repository_root()
+            manifest = root / "runtime-manifest.json"
+            metadata = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
+            print(json.dumps({"ok": True, "version": __version__,
+                              "runtimeKind": "installed" if manifest.is_file() else "source",
+                              "runtimeDigest": metadata.get("bundleDigest"),
+                              "resourceCount": len(metadata.get("files", {})),
+                              "nodeAvailable": shutil.which("node") is not None}, indent=2))
+            return 0
         if args.command == "init":
             return _command_init(args)
         if args.command == "status":

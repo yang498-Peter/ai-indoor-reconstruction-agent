@@ -172,7 +172,7 @@ class HandshakeTest(McpServerTestCase):
     def test_official_sdk_negotiates_server_identity(self):
         result = self.handshake()
         self.assertEqual(result["serverInfo"]["name"], "semantic-scene-v2")
-        self.assertEqual(result["serverInfo"]["version"], "0.8.0")
+        self.assertEqual(result["serverInfo"]["version"], "0.9.0")
 
     def test_unknown_tool_is_reported_as_tool_error(self):
         self.handshake()

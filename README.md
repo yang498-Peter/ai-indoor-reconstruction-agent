@@ -11,7 +11,24 @@
 - 发布前独立检查拓扑、遗漏、墙体交接、家具姿态、碰撞、地面和静态/三维视觉证据。
 - 不依赖 GroundingDINO、TRELLIS、Blender 或模型 API。
 
-## 新电脑快速开始
+## 独立安装（无需源码 checkout）
+
+使用 Python 3.11 或 3.12。下载同版本的 wheel 和 `constraints-runtime.txt`，在新电脑建立虚拟环境：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -c constraints-runtime.txt "./indoor_reconstruction_agent-0.9.0-py3-none-any.whl[presentation]"
+.\.venv\Scripts\indoor-recon.exe doctor --json
+.\.venv\Scripts\indoor-recon.exe smoke --work smoke-001
+```
+
+Linux 使用 `.venv/bin/python` 和 `.venv/bin/indoor-recon`。基础 CLI/MCP 可不安装 `[presentation]`；完整 IFC/网格工具使用该额外依赖。安装依赖需要访问 Python 包源，之后常规计算无需在线模型服务。完整权威流程中的 JavaScript 几何检查另需 Node 22；没有 Node 时相应门禁仍阻断，不自动略过。
+
+Schema、策略、配置、模板、领域实现与多视图/证据/IFC 脚本均由安装包按白名单携带，并校核资源哈希。命令可从任意工作目录运行，所有项目结果使用自己的 `--work`/输出路径保存。`doctor` 应显示 `runtimeKind: installed`，不会从当前目录的其他仓库加载代码。Python 环境的安装与升级不移动既有模型、点云或证据。
+
+可用工具入口包括 `multiview`、`camera-control`、`multiview-batch`、`evidence`、`alignment`、`ifc-check` 和 `smoke`；每个入口支持 `--help`。它们沿用现有生产器和验收规则，不自动应用拟合候选或接受 Scene。
+
+## 开发源码检出
 
 ```powershell
 git clone https://github.com/yang498-Peter/ai-indoor-reconstruction-agent.git

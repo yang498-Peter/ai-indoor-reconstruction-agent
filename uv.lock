@@ -312,7 +312,7 @@ wheels = [
 
 [[package]]
 name = "indoor-reconstruction-agent"
-version = "0.8.0"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
@@ -325,6 +325,13 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "shapely" },
+]
+
+[package.optional-dependencies]
+presentation = [
+    { name = "ifcopenshell" },
+    { name = "lazrs" },
+    { name = "trimesh" },
 ]
 
 [package.dev-dependencies]
@@ -340,8 +347,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ifcopenshell", marker = "extra == 'presentation'", specifier = "==0.8.5" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "laspy", specifier = ">=2.5,<3" },
+    { name = "lazrs", marker = "extra == 'presentation'", specifier = "==0.8.2" },
     { name = "matplotlib", specifier = ">=3.8,<4" },
     { name = "mcp", specifier = "==2.0.0" },
     { name = "numpy", specifier = ">=1.26,<2.4" },
@@ -349,7 +358,9 @@ requires-dist = [
     { name = "pillow", specifier = ">=10,<12" },
     { name = "scipy", specifier = ">=1.12,<2" },
     { name = "shapely", specifier = ">=2.0,<3" },
+    { name = "trimesh", marker = "extra == 'presentation'", specifier = "==4.12.2" },
 ]
+provides-extras = ["presentation"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -38,8 +38,12 @@ def _file_sha(path: Path) -> str:
 
 
 def _git_sha(root: Path) -> str:
+    bundled = root / "runtime-manifest.json"
+    if bundled.is_file():
+        return json.loads(bundled.read_text(encoding="utf-8")).get("sourceRevision") or "UNKNOWN"
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=False, capture_output=True, text=True,
+        ["git", "-c", f"safe.directory={root.as_posix()}", "rev-parse", "HEAD"],
+        cwd=root, check=False, capture_output=True, text=True,
     )
     return result.stdout.strip() if result.returncode == 0 else "UNKNOWN"
 

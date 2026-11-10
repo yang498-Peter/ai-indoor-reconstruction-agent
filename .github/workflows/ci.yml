@@ -36,6 +36,16 @@ jobs:
         run: uv run --project ../.. python -m unittest discover -s tests -v
       - name: Run presentation exchange smoke
         run: uv run python scripts/smoke_presentation.py --work "${{ runner.temp }}/presentation-smoke"
+      - name: Build standalone distributions
+        run: uv build --out-dir "${{ runner.temp }}/standalone-dist"
+      - name: Install and run outside checkout with source access denied
+        run: uv run python scripts/verify_standalone_install.py --wheel "${{ runner.temp }}/standalone-dist/indoor_reconstruction_agent-0.9.0-py3-none-any.whl" --work "${{ runner.temp }}/standalone-installed"
+      - name: Preserve independent installation receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ${{ runner.temp }}/standalone-installed/standalone-install.json
+          if-no-files-found: error
       - name: Run quick benchmark
         run: uv run indoor-recon benchmark --output outputs/ci-benchmark-report.json
       - name: Preserve benchmark report
@@ -67,6 +77,7 @@ jobs:
           python -m pip install uv==0.12.5
           uv sync --locked --all-groups --python python
       - run: uv run ruff check src tests/contracts/test_wp8_engineering.py
+      - run: uv run ruff check hatch_build.py scripts/verify_standalone_install.py tests/test_standalone_resources.py
       - run: uv run mypy
       - run: uv build
       - run: uv run indoor-recon --help
